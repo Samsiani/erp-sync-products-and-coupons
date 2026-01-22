@@ -201,7 +201,7 @@ class Frontend {
             <ul class="erp-sync-branch-stock-list">
                 <?php foreach ( $display_items as $item ) : ?>
                     <li class="erp-sync-branch-stock-item">
-                        <span class="erp-sync-branch-name"><?php echo $item['name']; ?></span>
+                        <span class="erp-sync-branch-name"><?php echo esc_html( $item['name'] ); ?></span>
                         <span class="erp-sync-branch-qty">
                             <span class="erp-sync-branch-qty-value"><?php echo esc_html( $item['quantity'] ); ?></span>
                             <?php esc_html_e( 'in stock', 'erp-sync' ); ?>
