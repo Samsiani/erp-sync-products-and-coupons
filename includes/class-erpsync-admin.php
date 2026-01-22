@@ -22,6 +22,10 @@ class Admin {
         add_action( 'admin_post_erp_sync_raw_dump', [ __CLASS__, 'handle_raw_dump' ] );
         add_action( 'admin_post_erp_sync_products_test', [ __CLASS__, 'handle_products_test' ] );
         add_action( 'admin_post_erp_sync_generate_mock', [ __CLASS__, 'handle_generate_mock' ] );
+        
+        // Product sync actions
+        add_action( 'admin_post_erp_sync_import_products_catalog', [ __CLASS__, 'handle_import_products_catalog' ] );
+        add_action( 'admin_post_erp_sync_update_products_stock', [ __CLASS__, 'handle_update_products_stock' ] );
 
         // Cron & diagnostics
         add_action( 'admin_post_erp_sync_run_cron_now', [ __CLASS__, 'handle_run_cron_now' ] );
@@ -73,7 +77,25 @@ class Admin {
         if ( ! in_array( $soap_version, [ 11, 12 ], true ) ) $soap_version = 11;
         update_option( API_Client::OPTION_SOAP_VERSION, $soap_version );
 
-        // Cron Settings
+        // Products Catalog Cron Settings
+        $catalog_cron_enabled  = isset( $_POST['catalog_cron_enabled'] ) ? 1 : 0;
+        $catalog_cron_interval = (string) ( $_POST['catalog_cron_interval'] ?? 'erp_sync_daily' );
+        if ( ! in_array( $catalog_cron_interval, [ 'erp_sync_hourly', 'erp_sync_twicedaily', 'erp_sync_daily' ], true ) ) {
+            $catalog_cron_interval = 'erp_sync_daily';
+        }
+        update_option( Cron::OPTION_CATALOG_CRON_ENABLED, $catalog_cron_enabled );
+        update_option( Cron::OPTION_CATALOG_CRON_INTERVAL, $catalog_cron_interval );
+
+        // Stock Cron Settings
+        $stock_cron_enabled  = isset( $_POST['stock_cron_enabled'] ) ? 1 : 0;
+        $stock_cron_interval = (string) ( $_POST['stock_cron_interval'] ?? 'erp_sync_15min' );
+        if ( ! in_array( $stock_cron_interval, [ 'erp_sync_5min', 'erp_sync_10min', 'erp_sync_15min', 'erp_sync_30min', 'erp_sync_hourly' ], true ) ) {
+            $stock_cron_interval = 'erp_sync_15min';
+        }
+        update_option( Cron::OPTION_STOCK_CRON_ENABLED, $stock_cron_enabled );
+        update_option( Cron::OPTION_STOCK_CRON_INTERVAL, $stock_cron_interval );
+
+        // Coupons Cron Settings
         $cron_enabled  = isset( $_POST['cron_enabled'] ) ? 1 : 0;
         $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_10min' );
         if ( ! in_array( $cron_interval, [ 'erp_sync_5min','erp_sync_10min','erp_sync_15min' ], true ) ) {
@@ -144,6 +166,54 @@ class Admin {
             wp_redirect( add_query_arg( [
                 'page'    => self::MENU_SLUG,
                 'syncerr' => rawurlencode( $e->getMessage() ),
+            ], admin_url( 'admin.php' ) ) );
+        }
+        exit;
+    }
+
+    public static function handle_import_products_catalog(): void {
+        check_admin_referer( 'erp_sync_actions' );
+        if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
+        
+        try {
+            $svc = new Sync_Service( new API_Client() );
+            $res = $svc->import_products_catalog();
+            wp_redirect( add_query_arg( [
+                'page'             => self::MENU_SLUG,
+                'catalog_created'  => (int) ( $res['created'] ?? 0 ),
+                'catalog_updated'  => (int) ( $res['updated'] ?? 0 ),
+                'catalog_errors'   => (int) ( $res['errors'] ?? 0 ),
+                'catalog_total'    => (int) ( $res['total'] ?? 0 ),
+            ], admin_url( 'admin.php' ) ) );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Import products catalog failed', [ 'error' => $e->getMessage() ] );
+            wp_redirect( add_query_arg( [
+                'page'       => self::MENU_SLUG,
+                'catalogerr' => rawurlencode( $e->getMessage() ),
+            ], admin_url( 'admin.php' ) ) );
+        }
+        exit;
+    }
+
+    public static function handle_update_products_stock(): void {
+        check_admin_referer( 'erp_sync_actions' );
+        if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
+        
+        try {
+            $svc = new Sync_Service( new API_Client() );
+            $res = $svc->update_products_stock();
+            wp_redirect( add_query_arg( [
+                'page'          => self::MENU_SLUG,
+                'stock_updated' => (int) ( $res['updated'] ?? 0 ),
+                'stock_skipped' => (int) ( $res['skipped'] ?? 0 ),
+                'stock_errors'  => (int) ( $res['errors'] ?? 0 ),
+                'stock_total'   => (int) ( $res['total'] ?? 0 ),
+            ], admin_url( 'admin.php' ) ) );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Update products stock failed', [ 'error' => $e->getMessage() ] );
+            wp_redirect( add_query_arg( [
+                'page'     => self::MENU_SLUG,
+                'stockerr' => rawurlencode( $e->getMessage() ),
             ], admin_url( 'admin.php' ) ) );
         }
         exit;
@@ -384,7 +454,7 @@ class Admin {
 
     private static function render_notices(): void {
         $notices = [];
-        $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced'];
+        $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr'];
         
         foreach ( $notice_keys as $k ) {
             if ( ! isset( $_GET[$k] ) ) continue;
@@ -445,6 +515,30 @@ class Admin {
                 case 'metadl':
                     if ( $_GET['metadl'] === 'empty' ) $notices[] = ['error', __( 'No meta captured.', 'erp-sync' )];
                     break;
+                case 'catalog_created':
+                    $notices[] = ['success', sprintf( 
+                        __('Products Catalog Sync: Created %d, Updated %d, Errors %d (Total: %d)', 'erp-sync'), 
+                        intval($_GET['catalog_created']), 
+                        intval($_GET['catalog_updated'] ?? 0), 
+                        intval($_GET['catalog_errors'] ?? 0), 
+                        intval($_GET['catalog_total'] ?? 0) 
+                    )];
+                    break;
+                case 'catalogerr':
+                    $notices[] = ['error', sprintf( __('Products catalog sync failed: %s', 'erp-sync' ), esc_html( urldecode($_GET['catalogerr']) ) )];
+                    break;
+                case 'stock_updated':
+                    $notices[] = ['success', sprintf( 
+                        __('Stock & Prices Sync: Updated %d, Skipped %d, Errors %d (Total: %d)', 'erp-sync'), 
+                        intval($_GET['stock_updated']), 
+                        intval($_GET['stock_skipped'] ?? 0), 
+                        intval($_GET['stock_errors'] ?? 0), 
+                        intval($_GET['stock_total'] ?? 0) 
+                    )];
+                    break;
+                case 'stockerr':
+                    $notices[] = ['error', sprintf( __('Stock & prices sync failed: %s', 'erp-sync' ), esc_html( urldecode($_GET['stockerr']) ) )];
+                    break;
             }
         }
 
@@ -487,11 +581,23 @@ class Admin {
         $last_res_headers = get_option( API_Client::OPTION_LAST_RESPONSE_HEADERS, '' );
         $last_meta_json   = get_option( API_Client::OPTION_LAST_INFOCARDS_META, '' );
 
-        // Cron
+        // Cron (Coupons)
         $cron_enabled   = (bool) get_option( Cron::OPTION_CRON_ENABLED, false );
         $cron_interval  = (string) get_option( Cron::OPTION_CRON_INTERVAL, 'erp_sync_10min' );
         $cron_next      = class_exists('\ERPSync\Cron') ? Cron::next_run_human() : '—';
         $cron_last_res  = get_option( Cron::OPTION_CRON_LAST_RESULT, [] );
+
+        // Cron (Products Catalog)
+        $catalog_cron_enabled  = (bool) get_option( Cron::OPTION_CATALOG_CRON_ENABLED, false );
+        $catalog_cron_interval = (string) get_option( Cron::OPTION_CATALOG_CRON_INTERVAL, 'erp_sync_daily' );
+        $catalog_cron_next     = class_exists('\ERPSync\Cron') ? Cron::next_catalog_run_human() : '—';
+        $catalog_cron_last_res = get_option( Cron::OPTION_CATALOG_CRON_LAST_RESULT, [] );
+
+        // Cron (Stock & Prices)
+        $stock_cron_enabled  = (bool) get_option( Cron::OPTION_STOCK_CRON_ENABLED, false );
+        $stock_cron_interval = (string) get_option( Cron::OPTION_STOCK_CRON_INTERVAL, 'erp_sync_15min' );
+        $stock_cron_next     = class_exists('\ERPSync\Cron') ? Cron::next_stock_run_human() : '—';
+        $stock_cron_last_res = get_option( Cron::OPTION_STOCK_CRON_LAST_RESULT, [] );
 
         ?>
         <div class="wrap erp-sync-admin-wrap">
@@ -573,7 +679,82 @@ class Admin {
                         </tr>
                     </table>
 
-                    <h2><?php _e( 'Automation', 'erp-sync' ); ?></h2>
+                    <h2><?php _e( 'Products Automation', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Schedule automatic synchronization of product catalog, stock and prices.', 'erp-sync'); ?></p>
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="catalog_cron_enabled"><?php _e('Enable Catalog Sync','erp-sync'); ?></label></th>
+                            <td>
+                                <label><input type="checkbox" id="catalog_cron_enabled" name="catalog_cron_enabled" value="1" <?php checked( $catalog_cron_enabled ); ?>> <?php _e('Sync product names, attributes automatically.', 'erp-sync'); ?></label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="catalog_cron_interval"><?php _e('Catalog Sync Frequency','erp-sync'); ?></label></th>
+                            <td>
+                                <select id="catalog_cron_interval" name="catalog_cron_interval">
+                                    <option value="erp_sync_hourly"     <?php selected( $catalog_cron_interval, 'erp_sync_hourly'     ); ?>><?php _e('Hourly','erp-sync'); ?></option>
+                                    <option value="erp_sync_twicedaily" <?php selected( $catalog_cron_interval, 'erp_sync_twicedaily' ); ?>><?php _e('Twice Daily','erp-sync'); ?></option>
+                                    <option value="erp_sync_daily"      <?php selected( $catalog_cron_interval, 'erp_sync_daily'      ); ?>><?php _e('Daily','erp-sync'); ?></option>
+                                </select>
+                                <p class="description">
+                                    <?php printf( __('Next run: %s', 'erp-sync' ), '<strong>' . esc_html( $catalog_cron_next ) . '</strong>' ); ?>
+                                    <?php
+                                    if ( is_array( $catalog_cron_last_res ) && ! empty( $catalog_cron_last_res ) ) {
+                                        echo '<br>'.esc_html( sprintf(
+                                            __('Last run: %s, success=%s, created=%d, updated=%d, duration=%sms', 'erp-sync'),
+                                            $catalog_cron_last_res['time'] ?? '—',
+                                            ! empty( $catalog_cron_last_res['success'] ) ? 'yes' : 'no',
+                                            (int) ( $catalog_cron_last_res['created'] ?? 0 ),
+                                            (int) ( $catalog_cron_last_res['updated'] ?? 0 ),
+                                            (int) ( $catalog_cron_last_res['duration_ms'] ?? 0 )
+                                        ) );
+                                        if ( ! empty( $catalog_cron_last_res['error'] ) ) {
+                                            echo '<br><span class="erp-sync-error">'.esc_html( sprintf( __('Error: %s','erp-sync' ), $catalog_cron_last_res['error'] ) ).'</span>';
+                                        }
+                                    }
+                                    ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="stock_cron_enabled"><?php _e('Enable Stock Sync','erp-sync'); ?></label></th>
+                            <td>
+                                <label><input type="checkbox" id="stock_cron_enabled" name="stock_cron_enabled" value="1" <?php checked( $stock_cron_enabled ); ?>> <?php _e('Sync prices and quantities automatically.', 'erp-sync'); ?></label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="stock_cron_interval"><?php _e('Stock Sync Frequency','erp-sync'); ?></label></th>
+                            <td>
+                                <select id="stock_cron_interval" name="stock_cron_interval">
+                                    <option value="erp_sync_5min"   <?php selected( $stock_cron_interval, 'erp_sync_5min'   ); ?>><?php _e('Every 5 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_10min"  <?php selected( $stock_cron_interval, 'erp_sync_10min'  ); ?>><?php _e('Every 10 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_15min"  <?php selected( $stock_cron_interval, 'erp_sync_15min'  ); ?>><?php _e('Every 15 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_30min"  <?php selected( $stock_cron_interval, 'erp_sync_30min'  ); ?>><?php _e('Every 30 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_hourly" <?php selected( $stock_cron_interval, 'erp_sync_hourly' ); ?>><?php _e('Hourly','erp-sync'); ?></option>
+                                </select>
+                                <p class="description">
+                                    <?php printf( __('Next run: %s', 'erp-sync' ), '<strong>' . esc_html( $stock_cron_next ) . '</strong>' ); ?>
+                                    <?php
+                                    if ( is_array( $stock_cron_last_res ) && ! empty( $stock_cron_last_res ) ) {
+                                        echo '<br>'.esc_html( sprintf(
+                                            __('Last run: %s, success=%s, updated=%d, skipped=%d, duration=%sms', 'erp-sync'),
+                                            $stock_cron_last_res['time'] ?? '—',
+                                            ! empty( $stock_cron_last_res['success'] ) ? 'yes' : 'no',
+                                            (int) ( $stock_cron_last_res['updated'] ?? 0 ),
+                                            (int) ( $stock_cron_last_res['skipped'] ?? 0 ),
+                                            (int) ( $stock_cron_last_res['duration_ms'] ?? 0 )
+                                        ) );
+                                        if ( ! empty( $stock_cron_last_res['error'] ) ) {
+                                            echo '<br><span class="erp-sync-error">'.esc_html( sprintf( __('Error: %s','erp-sync' ), $stock_cron_last_res['error'] ) ).'</span>';
+                                        }
+                                    }
+                                    ?>
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <h2><?php _e( 'Coupons Automation', 'erp-sync' ); ?></h2>
                     <table class="form-table">
                         <tr>
                             <th><label for="cron_enabled"><?php _e('Enable Scheduled Import','erp-sync'); ?></label></th>
@@ -614,8 +795,29 @@ class Admin {
 
                 <!-- Actions Tab -->
                 <div id="tab-actions" class="erp-sync-tab-content" style="display:none;">
-                    <h2><?php _e( 'Manual Actions', 'erp-sync' ); ?></h2>
-                    <p class="description"><?php _e('Use these buttons to manually trigger synchronization operations.', 'erp-sync'); ?></p>
+                    <h2><?php _e( 'Products Sync', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Synchronize WooCommerce products with the ERP system.', 'erp-sync'); ?></p>
+                    
+                    <div class="erp-sync-action-buttons">
+                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_import_products_catalog">
+                            <?php submit_button( __('Sync Products Catalog','erp-sync'), 'primary', 'submit', false ); ?>
+                            <p class="description"><?php _e('Updates names, attributes, and creates new products. Run once daily.', 'erp-sync'); ?></p>
+                        </form>
+
+                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_update_products_stock">
+                            <?php submit_button( __('Sync Stock & Prices','erp-sync'), 'primary', 'submit', false ); ?>
+                            <p class="description"><?php _e('Updates only prices and quantities. Run frequently.', 'erp-sync'); ?></p>
+                        </form>
+                    </div>
+
+                    <hr style="margin: 20px 0;">
+
+                    <h2><?php _e( 'Coupons Sync', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Use these buttons to manually trigger coupon synchronization operations.', 'erp-sync'); ?></p>
                     
                     <div class="erp-sync-action-buttons">
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
