@@ -45,8 +45,8 @@ class Audit_Logger {
 
         $table_name = self::get_table_name();
 
-        // Check if table exists
-        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
+        // Check if table exists - table name is sanitized via esc_sql since it contains user-controllable prefix
+        $table_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table_name ) ) === $table_name;
         if ( ! $table_exists ) {
             Logger::instance()->log( 'Audit log table does not exist', [
                 'table' => $table_name,
@@ -251,14 +251,16 @@ class Audit_Logger {
 
         $table_name = self::get_table_name();
 
-        // Check if table exists
-        $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
+        // Check if table exists - use prepared statement for safety
+        $table_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table_name ) ) === $table_name;
         if ( ! $table_exists ) {
             return 0;
         }
 
+        // Note: Table name cannot be parameterized in prepared statements,
+        // but it's safely constructed from $wpdb->prefix which is trusted
         $deleted = $wpdb->query( $wpdb->prepare(
-            "DELETE FROM $table_name WHERE created_at < %s",
+            "DELETE FROM `$table_name` WHERE created_at < %s",
             gmdate( 'Y-m-d H:i:s', strtotime( "-$days days" ) )
         ) );
 

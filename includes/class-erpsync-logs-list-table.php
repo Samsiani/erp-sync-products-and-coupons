@@ -94,7 +94,7 @@ class Logs_List_Table extends \WP_List_Table {
                 return '';
 
             default:
-                return print_r( $item, true );
+                return '';
         }
     }
 

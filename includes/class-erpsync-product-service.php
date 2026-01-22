@@ -793,6 +793,8 @@ class Product_Service {
         $changes = [];
 
         // Compare Regular Price
+        // Note: Only log when new_regular_price > 0 because the code only updates
+        // prices when they are positive (to avoid overwriting valid prices with zero)
         if ( abs( $old_regular_price - $new_regular_price ) > 0.001 && $new_regular_price > 0 ) {
             $message = sprintf(
                 'Price: %s → %s',
