@@ -869,93 +869,6 @@ class Admin {
                     </table>
                 </div>
 
-                <!-- Actions Tab -->
-                <div id="tab-actions" class="erp-sync-tab-content" style="display:none;">
-                    <h2><?php _e( 'Products Sync', 'erp-sync' ); ?></h2>
-                    <p class="description"><?php _e('Synchronize WooCommerce products with the ERP system.', 'erp-sync'); ?></p>
-                    
-                    <div class="erp-sync-action-buttons">
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_import_products_catalog">
-                            <?php submit_button( __('Sync Products Catalog','erp-sync'), 'primary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Updates names, attributes, and creates new products. Run once daily.', 'erp-sync'); ?></p>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_update_products_stock">
-                            <?php submit_button( __('Sync Stock & Prices','erp-sync'), 'primary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Updates only prices and quantities. Run frequently.', 'erp-sync'); ?></p>
-                        </form>
-                    </div>
-
-                    <hr style="margin: 20px 0;">
-
-                    <h2><?php _e( 'Coupons Sync', 'erp-sync' ); ?></h2>
-                    <p class="description"><?php _e('Use these buttons to manually trigger coupon synchronization operations.', 'erp-sync'); ?></p>
-                    
-                    <div class="erp-sync-action-buttons">
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_import_new">
-                            <?php submit_button( __('Import New Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Import only codes that don\'t exist locally.', 'erp-sync'); ?></p>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_update_existing">
-                            <?php submit_button( __('Update Existing Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Update only codes that already exist locally.', 'erp-sync'); ?></p>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_full_sync">
-                            <?php submit_button( __('Full Sync (Create + Update)','erp-sync'), 'primary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Sync all codes: create new and update existing.', 'erp-sync'); ?></p>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_force_import_all">
-                            <?php submit_button( __('Force Import ALL','erp-sync'), 'delete', 'submit', false, ['onclick' => 'return confirm("'.__('This will overwrite ALL existing coupons. Continue?', 'erp-sync').'");'] ); ?>
-                            <p class="description"><?php _e('Force re-import everything from 1C, overwriting local data.', 'erp-sync'); ?> ⚠️</p>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_test_connection">
-                            <?php submit_button( __('Test Connection (non-destructive)','erp-sync'), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_raw_dump">
-                            <?php submit_button( __('Quick Raw Dump','erp-sync'), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_products_test">
-                            <?php submit_button( __('Test Products','erp-sync'), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_generate_mock">
-                            <?php submit_button( __('Generate Mock Cards','erp-sync'), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_run_cron_now">
-                            <?php submit_button( __('Run Scheduled Import Now','erp-sync'), 'secondary', 'submit', false ); ?>
-                        </form>
-                    </div>
-                </div>
-
                 <!-- Webhooks Tab -->
                 <div id="tab-webhooks" class="erp-sync-tab-content" style="display:none;">
                     <h2><?php _e( 'Webhook Configuration', 'erp-sync' ); ?></h2>
@@ -1050,93 +963,180 @@ class Admin {
                     </table>
                 </div>
 
-                <!-- Diagnostics Tab -->
-                <div id="tab-diagnostics" class="erp-sync-tab-content" style="display:none;">
-                    <h2><?php _e( 'Diagnostics & Debug Data', 'erp-sync' ); ?></h2>
-                    <p class="description"><?php _e('Enable Debug in Settings tab, run a sync, then download the artifacts here.', 'erp-sync'); ?></p>
-                    
-                    <div class="erp-sync-diagnostics-buttons">
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_download_last_request" />
-                            <?php submit_button( __( 'Download Last SOAP Request', 'erp-sync' ), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_download_last_xml" />
-                            <?php submit_button( __( 'Download Last SOAP Response', 'erp-sync' ), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_download_last_fault" />
-                            <?php submit_button( __( 'Download Last SOAP Fault', 'erp-sync' ), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_download_last_headers" />
-                            <?php submit_button( __( 'Download Last SOAP Headers', 'erp-sync' ), 'secondary', 'submit', false ); ?>
-                        </form>
-
-                        <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                            <input type="hidden" name="action" value="erp_sync_download_last_meta" />
-                            <?php submit_button( __( 'Download InfoCards Meta (JSON)', 'erp-sync' ), 'secondary', 'submit', false ); ?>
-                        </form>
-                    </div>
-
-                    <?php if ( $debug ) : ?>
-                        <?php if ( $last_req_xml ) : ?>
-                            <h3><?php _e('Last SOAP Request (excerpt)','erp-sync'); ?></h3>
-                            <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_req_xml ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_raw_xml ) : ?>
-                            <h3><?php _e('Last SOAP Response (excerpt)','erp-sync'); ?></h3>
-                            <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_raw_xml ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_req_headers ) : ?>
-                            <h3><?php _e('Last SOAP Request Headers (excerpt)','erp-sync'); ?></h3>
-                            <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_req_headers ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_res_headers ) : ?>
-                            <h3><?php _e('Last SOAP Response Headers (excerpt)','erp-sync'); ?></h3>
-                            <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_res_headers ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_meta_json ) : ?>
-                            <h3><?php _e('Last InformationCards Meta','erp-sync'); ?></h3>
-                            <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_meta_json ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_fault ) : ?>
-                            <h3><?php _e('Last SOAP Fault','erp-sync'); ?></h3>
-                            <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_fault ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_raw_json ) : ?>
-                            <h3><?php _e('Last Raw JSON Excerpt','erp-sync'); ?></h3>
-                            <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_raw_json ); ?></textarea>
-                        <?php endif; ?>
-
-                        <?php if ( $last_prod_xml ) : ?>
-                            <h3><?php _e('Products Raw XML Excerpt','erp-sync'); ?></h3>
-                            <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_prod_xml ); ?></textarea>
-                        <?php endif; ?>
-                    <?php else : ?>
-                        <p class="erp-sync-notice"><?php _e('Enable Debug mode in Settings tab to see detailed information here.', 'erp-sync'); ?></p>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Save Button (visible on all tabs) -->
-                <p class="submit">
+                <!-- Save Button (visible on settings/webhooks/security tabs) -->
+                <p class="submit erp-sync-settings-submit">
                     <?php submit_button( __( 'Save All Settings', 'erp-sync' ), 'primary', 'submit', false ); ?>
                 </p>
             </form>
+
+            <!-- Actions Tab (outside the main settings form - contains its own forms) -->
+            <div id="tab-actions" class="erp-sync-tab-content" style="display:none;">
+                <h2><?php _e( 'Products Sync', 'erp-sync' ); ?></h2>
+                <p class="description"><?php _e('Synchronize WooCommerce products with the ERP system.', 'erp-sync'); ?></p>
+                
+                <div class="erp-sync-action-buttons">
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_import_products_catalog">
+                        <?php submit_button( __('Sync Products Catalog','erp-sync'), 'primary', 'submit', false ); ?>
+                        <p class="description"><?php _e('Updates names, attributes, and creates new products. Run once daily.', 'erp-sync'); ?></p>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_update_products_stock">
+                        <?php submit_button( __('Sync Stock & Prices','erp-sync'), 'primary', 'submit', false ); ?>
+                        <p class="description"><?php _e('Updates only prices and quantities. Run frequently.', 'erp-sync'); ?></p>
+                    </form>
+                </div>
+
+                <hr style="margin: 20px 0;">
+
+                <h2><?php _e( 'Coupons Sync', 'erp-sync' ); ?></h2>
+                <p class="description"><?php _e('Use these buttons to manually trigger coupon synchronization operations.', 'erp-sync'); ?></p>
+                
+                <div class="erp-sync-action-buttons">
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_import_new">
+                        <?php submit_button( __('Import New Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
+                        <p class="description"><?php _e('Import only codes that don\'t exist locally.', 'erp-sync'); ?></p>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_update_existing">
+                        <?php submit_button( __('Update Existing Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
+                        <p class="description"><?php _e('Update only codes that already exist locally.', 'erp-sync'); ?></p>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_full_sync">
+                        <?php submit_button( __('Full Sync (Create + Update)','erp-sync'), 'primary', 'submit', false ); ?>
+                        <p class="description"><?php _e('Sync all codes: create new and update existing.', 'erp-sync'); ?></p>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_force_import_all">
+                        <?php submit_button( __('Force Import ALL','erp-sync'), 'delete', 'submit', false, ['onclick' => 'return confirm("'.__('This will overwrite ALL existing coupons. Continue?', 'erp-sync').'");'] ); ?>
+                        <p class="description"><?php _e('Force re-import everything from 1C, overwriting local data.', 'erp-sync'); ?> ⚠️</p>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_test_connection">
+                        <?php submit_button( __('Test Connection (non-destructive)','erp-sync'), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_raw_dump">
+                        <?php submit_button( __('Quick Raw Dump','erp-sync'), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_products_test">
+                        <?php submit_button( __('Test Products','erp-sync'), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_generate_mock">
+                        <?php submit_button( __('Generate Mock Cards','erp-sync'), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_run_cron_now">
+                        <?php submit_button( __('Run Scheduled Import Now','erp-sync'), 'secondary', 'submit', false ); ?>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Diagnostics Tab (outside the main settings form - contains its own forms) -->
+            <div id="tab-diagnostics" class="erp-sync-tab-content" style="display:none;">
+                <h2><?php _e( 'Diagnostics & Debug Data', 'erp-sync' ); ?></h2>
+                <p class="description"><?php _e('Enable Debug in Settings tab, run a sync, then download the artifacts here.', 'erp-sync'); ?></p>
+                
+                <div class="erp-sync-diagnostics-buttons">
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_download_last_request" />
+                        <?php submit_button( __( 'Download Last SOAP Request', 'erp-sync' ), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_download_last_xml" />
+                        <?php submit_button( __( 'Download Last SOAP Response', 'erp-sync' ), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_download_last_fault" />
+                        <?php submit_button( __( 'Download Last SOAP Fault', 'erp-sync' ), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_download_last_headers" />
+                        <?php submit_button( __( 'Download Last SOAP Headers', 'erp-sync' ), 'secondary', 'submit', false ); ?>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
+                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_download_last_meta" />
+                        <?php submit_button( __( 'Download InfoCards Meta (JSON)', 'erp-sync' ), 'secondary', 'submit', false ); ?>
+                    </form>
+                </div>
+
+                <?php if ( $debug ) : ?>
+                    <?php if ( $last_req_xml ) : ?>
+                        <h3><?php _e('Last SOAP Request (excerpt)','erp-sync'); ?></h3>
+                        <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_req_xml ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_raw_xml ) : ?>
+                        <h3><?php _e('Last SOAP Response (excerpt)','erp-sync'); ?></h3>
+                        <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_raw_xml ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_req_headers ) : ?>
+                        <h3><?php _e('Last SOAP Request Headers (excerpt)','erp-sync'); ?></h3>
+                        <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_req_headers ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_res_headers ) : ?>
+                        <h3><?php _e('Last SOAP Response Headers (excerpt)','erp-sync'); ?></h3>
+                        <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_res_headers ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_meta_json ) : ?>
+                        <h3><?php _e('Last InformationCards Meta','erp-sync'); ?></h3>
+                        <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_meta_json ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_fault ) : ?>
+                        <h3><?php _e('Last SOAP Fault','erp-sync'); ?></h3>
+                        <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_fault ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_raw_json ) : ?>
+                        <h3><?php _e('Last Raw JSON Excerpt','erp-sync'); ?></h3>
+                        <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_raw_json ); ?></textarea>
+                    <?php endif; ?>
+
+                    <?php if ( $last_prod_xml ) : ?>
+                        <h3><?php _e('Products Raw XML Excerpt','erp-sync'); ?></h3>
+                        <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_prod_xml ); ?></textarea>
+                    <?php endif; ?>
+                <?php else : ?>
+                    <p class="erp-sync-notice"><?php _e('Enable Debug mode in Settings tab to see detailed information here.', 'erp-sync'); ?></p>
+                <?php endif; ?>
+            </div>
         </div>
         <?php
     }
