@@ -28,7 +28,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('ERPSync\\erp_sync_format_code') ? erp_sync_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( ! $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, false, false );
@@ -64,7 +64,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('ERPSync\\erp_sync_format_code') ? erp_sync_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, true, false );
@@ -101,7 +101,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('ERPSync\\erp_sync_format_code') ? erp_sync_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, true, true );
@@ -142,7 +142,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('ERPSync\\erp_sync_format_code') ? erp_sync_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             $exists = $this->coupon_exists( $formatted );
             
@@ -188,7 +188,7 @@ class Sync_Service {
      * @param bool $force Force overwrite all data (for force_import_all and full_sync)
      */
     public function create_or_update_coupon( array $card, bool $is_update, bool $force = false ): void {
-        $code = function_exists('ERPSync\\erp_sync_format_code') ? erp_sync_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+        $code = erp_sync_format_code( $card['CardCode'] );
         $coupon_id = wc_get_coupon_id_by_code( $code );
 
         // Create new coupon if doesn't exist
