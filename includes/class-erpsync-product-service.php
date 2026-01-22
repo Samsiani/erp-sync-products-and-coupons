@@ -17,6 +17,65 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Product_Service {
 
     /**
+     * Taxonomy slug for branch availability.
+     */
+    public const TAXONOMY_BRANCH = 'erp_branch';
+
+    /**
+     * Initialize the Product_Service hooks.
+     */
+    public static function init(): void {
+        add_action( 'init', [ __CLASS__, 'register_branch_taxonomy' ], 5 );
+    }
+
+    /**
+     * Register the erp_branch taxonomy for filtering products by branch.
+     *
+     * Public taxonomy visible in widgets for shop page filtering.
+     */
+    public static function register_branch_taxonomy(): void {
+        if ( taxonomy_exists( self::TAXONOMY_BRANCH ) ) {
+            return;
+        }
+
+        $labels = [
+            'name'                       => _x( 'Branches', 'taxonomy general name', 'erp-sync' ),
+            'singular_name'              => _x( 'Branch', 'taxonomy singular name', 'erp-sync' ),
+            'search_items'               => __( 'Search Branches', 'erp-sync' ),
+            'all_items'                  => __( 'All Branches', 'erp-sync' ),
+            'parent_item'                => null,
+            'parent_item_colon'          => null,
+            'edit_item'                  => __( 'Edit Branch', 'erp-sync' ),
+            'update_item'                => __( 'Update Branch', 'erp-sync' ),
+            'add_new_item'               => __( 'Add New Branch', 'erp-sync' ),
+            'new_item_name'              => __( 'New Branch Name', 'erp-sync' ),
+            'separate_items_with_commas' => __( 'Separate branches with commas', 'erp-sync' ),
+            'add_or_remove_items'        => __( 'Add or remove branches', 'erp-sync' ),
+            'choose_from_most_used'      => __( 'Choose from the most used branches', 'erp-sync' ),
+            'not_found'                  => __( 'No branches found.', 'erp-sync' ),
+            'menu_name'                  => __( 'Branch Availability', 'erp-sync' ),
+        ];
+
+        $args = [
+            'labels'             => $labels,
+            'public'             => true,
+            'publicly_queryable' => true,
+            'show_ui'            => true,
+            'show_in_menu'       => true,
+            'show_in_nav_menus'  => true,
+            'show_tagcloud'      => true,
+            'show_in_quick_edit' => true,
+            'show_admin_column'  => true,
+            'hierarchical'       => false,
+            'rewrite'            => [ 'slug' => 'branch', 'with_front' => false ],
+            'query_var'          => true,
+            'show_in_rest'       => true,
+        ];
+
+        register_taxonomy( self::TAXONOMY_BRANCH, [ 'product' ], $args );
+    }
+
+    /**
      * Option key for storing attribute mapping in database.
      */
     public const OPTION_ATTRIBUTE_MAPPING = 'erp_sync_attribute_mapping';
@@ -622,6 +681,7 @@ class Product_Service {
      *
      * Performance-optimized: only updates stock-related meta.
      * Also saves per-warehouse stock data for branch display.
+     * Assigns branch taxonomy terms efficiently by comparing target vs current.
      *
      * @param \WC_Product $product Product object.
      * @param array       $row     Stock data row from IBS API.
@@ -673,6 +733,106 @@ class Product_Service {
 
         // Update sync timestamp
         $product->update_meta_data( '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
+
+        // Assign branch taxonomy terms (performance-optimized)
+        $this->assign_branch_terms( $product, $warehouses );
+    }
+
+    /**
+     * Assign branch taxonomy terms to a product based on warehouse stock data.
+     *
+     * Performance-optimized: compares target terms vs current terms and only
+     * writes to database if they differ. This prevents unnecessary DB writes
+     * during frequent sync operations.
+     *
+     * @param \WC_Product $product    Product object.
+     * @param array       $warehouses Warehouse data array from IBS API.
+     */
+    private function assign_branch_terms( \WC_Product $product, array $warehouses ): void {
+        $product_id = $product->get_id();
+
+        // Ensure product ID is valid
+        if ( ! $product_id ) {
+            return;
+        }
+
+        // Step 1: Calculate Target Terms
+        // Get branch settings (aliases, exclusions)
+        $branch_settings = get_option( self::OPTION_BRANCH_SETTINGS, [] );
+        if ( ! is_array( $branch_settings ) ) {
+            $branch_settings = [];
+        }
+
+        $target_terms = [];
+
+        foreach ( $warehouses as $wh ) {
+            $location = $wh['Location'] ?? '';
+            $quantity = isset( $wh['Quantity'] ) ? (float) $wh['Quantity'] : 0;
+
+            // Skip if no location name
+            if ( empty( $location ) ) {
+                continue;
+            }
+
+            // Skip if quantity is zero or negative (branch not available for this product)
+            if ( $quantity <= 0 ) {
+                continue;
+            }
+
+            // Check if this branch is excluded in settings
+            $settings = $branch_settings[ $location ] ?? [];
+            if ( ! empty( $settings['excluded'] ) ) {
+                continue;
+            }
+
+            // Get display name (alias) or use original name
+            // This ensures renamed branches use their alias as the term name
+            $display_name = ! empty( $settings['alias'] ) ? $settings['alias'] : $location;
+            $display_name = sanitize_text_field( trim( $display_name ) );
+
+            if ( ! empty( $display_name ) ) {
+                $target_terms[] = $display_name;
+            }
+        }
+
+        // Remove duplicates and sort for consistent comparison
+        $target_terms = array_unique( $target_terms );
+        sort( $target_terms );
+
+        // Step 2: Get Current Terms
+        $current_terms = wp_get_object_terms( $product_id, self::TAXONOMY_BRANCH, [ 'fields' => 'names' ] );
+
+        if ( is_wp_error( $current_terms ) ) {
+            // Log the error - this indicates a database or configuration issue
+            Logger::instance()->log( 'Failed to get branch terms for product', [
+                'product_id' => $product_id,
+                'error'      => $current_terms->get_error_message(),
+            ] );
+            $current_terms = [];
+        }
+
+        // Sort current terms for consistent comparison
+        sort( $current_terms );
+
+        // Step 3: Compare & Optimize
+        // If arrays are identical, skip the database write entirely
+        if ( $target_terms === $current_terms ) {
+            // Zero DB write impact - terms haven't changed
+            return;
+        }
+
+        // Terms are different - update the database
+        // wp_set_object_terms with string names will find or create terms as needed
+        // This is the intended behavior for dynamic branch assignment
+        $result = wp_set_object_terms( $product_id, $target_terms, self::TAXONOMY_BRANCH );
+
+        if ( is_wp_error( $result ) ) {
+            Logger::instance()->log( 'Failed to set branch terms for product', [
+                'product_id'   => $product_id,
+                'target_terms' => $target_terms,
+                'error'        => $result->get_error_message(),
+            ] );
+        }
     }
 
     /**

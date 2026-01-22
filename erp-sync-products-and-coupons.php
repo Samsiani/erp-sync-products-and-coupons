@@ -171,6 +171,11 @@ function erp_sync_bootstrap(): void {
         \ERPSync\Security::init();
     }
 
+    // Initialize Product Service (registers branch taxonomy)
+    if ( class_exists( '\ERPSync\Product_Service' ) ) {
+        \ERPSync\Product_Service::init();
+    }
+
     // Initialize Webhook
     if ( class_exists( '\ERPSync\Webhook' ) ) {
         \ERPSync\Webhook::init();
