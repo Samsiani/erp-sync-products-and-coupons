@@ -42,11 +42,16 @@ class Admin {
         // AJAX handlers
         add_action( 'wp_ajax_erp_sync_sync_progress', [ __CLASS__, 'ajax_sync_progress' ] );
         add_action( 'wp_ajax_erp_sync_quick_edit_coupon', [ __CLASS__, 'ajax_quick_edit_coupon' ] );
+        add_action( 'wp_ajax_erp_sync_single_update', [ __CLASS__, 'ajax_single_update' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
         add_action( 'manage_shop_coupon_posts_custom_column', [ __CLASS__, 'render_coupon_columns' ], 10, 2 );
         add_filter( 'manage_edit-shop_coupon_sortable_columns', [ __CLASS__, 'sortable_columns' ] );
+
+        // Product admin columns (ERP Sync Update button)
+        add_filter( 'manage_edit-product_columns', [ __CLASS__, 'add_product_columns' ] );
+        add_action( 'manage_product_posts_custom_column', [ __CLASS__, 'render_product_columns' ], 10, 2 );
     }
 
     public static function menu(): void {
@@ -1411,5 +1416,74 @@ class Admin {
 
     private static function is_leap_year( int $y ): bool {
         return ( ( $y % 4 === 0 ) && ( $y % 100 !== 0 ) ) || ( $y % 400 === 0 );
+    }
+
+    /**
+     * Add ERP Sync column to the Products list table.
+     *
+     * @param array $cols Existing columns.
+     * @return array Modified columns.
+     */
+    public static function add_product_columns( array $cols ): array {
+        $cols['erp_sync_actions'] = __( 'ERP Sync', 'erp-sync' );
+        return $cols;
+    }
+
+    /**
+     * Render the ERP Sync column content for each product row.
+     *
+     * @param string $column  Column key.
+     * @param int    $post_id Product post ID.
+     */
+    public static function render_product_columns( string $column, int $post_id ): void {
+        if ( $column !== 'erp_sync_actions' ) {
+            return;
+        }
+
+        $product = wc_get_product( $post_id );
+        if ( ! $product ) {
+            return;
+        }
+
+        $sku = $product->get_sku();
+        if ( empty( $sku ) ) {
+            echo '<span class="erp-sync-no-sku" title="' . esc_attr__( 'No SKU assigned', 'erp-sync' ) . '">—</span>';
+            return;
+        }
+
+        echo '<button type="button" class="button erp-sync-single-update" data-id="' . esc_attr( $post_id ) . '">';
+        echo esc_html__( 'Update', 'erp-sync' );
+        echo '</button>';
+    }
+
+    /**
+     * AJAX handler for single product update.
+     * Syncs a single product's stock and price from the ERP.
+     */
+    public static function ajax_single_update(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        $product_id = isset( $_POST['product_id'] ) ? intval( $_POST['product_id'] ) : 0;
+
+        if ( ! $product_id ) {
+            wp_send_json_error( [ 'message' => __( 'Invalid product ID', 'erp-sync' ) ] );
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->sync_single_product( $product_id );
+
+            if ( $result ) {
+                wp_send_json_success( [ 'message' => __( 'Product synced successfully', 'erp-sync' ) ] );
+            } else {
+                wp_send_json_error( [ 'message' => __( 'Product sync failed', 'erp-sync' ) ] );
+            }
+        } catch ( \Throwable $e ) {
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
     }
 }

@@ -1,5 +1,5 @@
 /**
- * ERP Sync Admin JavaScript - Version 1.2.0
+ * ERP Sync Admin JavaScript - Version 1.3.0
  */
 
 (function($) {
@@ -176,14 +176,65 @@
         });
     }
 
+    // Single Product ERP Sync Update
+    function initSingleProductUpdate() {
+        $(document).on('click', '.erp-sync-single-update', function(e) {
+            e.preventDefault();
+            
+            const $button = $(this);
+            const productId = $button.data('id');
+            const originalText = $button.text();
+            
+            // Disable button and show loading state
+            $button.prop('disabled', true).addClass('updating-message');
+            $button.html('<span class="spinner is-active" style="float:none;margin:0 5px 0 0;"></span>' + originalText);
+            
+            $.ajax({
+                url: erpSyncAdmin.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'erp_sync_single_update',
+                    nonce: erpSyncAdmin.nonce,
+                    product_id: productId
+                },
+                success: function(response) {
+                    if (response.success) {
+                        // Show success state
+                        $button.removeClass('updating-message').addClass('button-primary');
+                        $button.html('✅ ' + (response.data.message || 'Done'));
+                        
+                        // Reset after 3 seconds
+                        setTimeout(function() {
+                            $button.removeClass('button-primary').prop('disabled', false);
+                            $button.text(originalText);
+                        }, 3000);
+                    } else {
+                        // Show error
+                        $button.removeClass('updating-message');
+                        $button.prop('disabled', false);
+                        $button.text(originalText);
+                        alert('Error: ' + (response.data.message || 'Unknown error'));
+                    }
+                },
+                error: function(xhr, status, error) {
+                    $button.removeClass('updating-message');
+                    $button.prop('disabled', false);
+                    $button.text(originalText);
+                    alert('AJAX Error: ' + error);
+                }
+            });
+        });
+    }
+
     // Initialize on document ready
     $(document).ready(function() {
         initTabs();
         initProgressPolling();
         initQuickEdit();
         initConfirmations();
+        initSingleProductUpdate();
         
-        console.log('ERP Sync Admin JS v1.2.0 loaded');
+        console.log('ERP Sync Admin JS v1.3.0 loaded');
     });
 
 })(jQuery);
