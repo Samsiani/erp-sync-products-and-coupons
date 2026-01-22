@@ -587,8 +587,8 @@ class Product_Service {
         $raw_sale_price = $row['SalesPrice'] ?? null;
         $sale_price = $this->parse_numeric_value( $raw_sale_price ?? 0 );
 
-        if ( $sale_price > 0 && ( $regular_price <= 0 || $sale_price < $regular_price ) ) {
-            // Set sale price if valid and lower than regular price (or regular price not set)
+        if ( $sale_price > 0 && $regular_price > 0 && $sale_price < $regular_price ) {
+            // Set sale price if valid and strictly lower than regular price
             $product->set_sale_price( (string) $sale_price );
         } else {
             // Remove sale price if empty, zero, or not lower than regular price
