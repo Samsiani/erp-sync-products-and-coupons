@@ -570,10 +570,18 @@ class Product_Service {
      * calculating the total stock. The global Quantity from the ERP
      * is ignored; instead, stock is recalculated from non-excluded warehouses.
      *
-     * @var array<string>
+     * This is a system-level exclusion list for warehouses that should never
+     * appear on the website (e.g., internal warehouses). For admin-configurable
+     * branch exclusions, see OPTION_BRANCH_SETTINGS used in assign_branch_terms().
+     *
+     * Note: This constant is intentionally hard-coded for simplicity and
+     * predictability. The client's requirement is to exclude a specific
+     * internal warehouse that should never be shown to end users.
+     *
+     * @var array<string, bool> Warehouse location names as keys for O(1) lookup.
      */
     private const EXCLUDED_WAREHOUSE_LOCATIONS = [
-        'ძირითადი საწყობი',
+        'ძირითადი საწყობი' => true,
     ];
 
     /**
@@ -707,6 +715,12 @@ class Product_Service {
      * Assigns branch taxonomy terms efficiently by comparing target vs current.
      * Logs changes to the audit log when values differ.
      *
+     * IMPORTANT: This method implements warehouse exclusion logic.
+     * The global Quantity from the ERP API is intentionally IGNORED.
+     * Stock is recalculated by summing quantities from non-excluded warehouses only.
+     * This ensures stock from internal/excluded warehouses (defined in
+     * EXCLUDED_WAREHOUSE_LOCATIONS) does not appear on the website.
+     *
      * @param \WC_Product $product    Product object.
      * @param array       $row        Stock data row from IBS API.
      * @param string      $session_id Optional unique session identifier for tracking sync.
@@ -754,17 +768,18 @@ class Product_Service {
         $all_warehouses = $row['_warehouses'] ?? [];
 
         // Step 2: Filter out excluded warehouse locations
-        // Only keep warehouses that are NOT in the exclusion list
+        // Only keep warehouses that are NOT in the exclusion list (O(1) lookup)
         $valid_warehouses = array_filter( $all_warehouses, function ( $wh ) {
             $location = $wh['Location'] ?? '';
-            return ! in_array( $location, self::EXCLUDED_WAREHOUSE_LOCATIONS, true );
+            return ! isset( self::EXCLUDED_WAREHOUSE_LOCATIONS[ $location ] );
         } );
 
         // Re-index array to ensure clean numeric keys after filtering
         $valid_warehouses = array_values( $valid_warehouses );
 
         // Step 3: Recalculate quantity from valid warehouses only
-        // IGNORE the global $row['Quantity'] from the API
+        // The global $row['Quantity'] from the API is intentionally ignored because
+        // it includes stock from excluded warehouses (e.g., internal warehouses)
         $quantity = 0;
         foreach ( $valid_warehouses as $wh ) {
             $quantity += (int) $this->parse_numeric_value( $wh['Quantity'] ?? 0 );
