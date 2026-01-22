@@ -573,13 +573,27 @@ class Product_Service {
         // Parse price (supports European decimal format with comma)
         // Only set price if we have a valid non-empty value from the API
         $raw_price = $row['Price'] ?? null;
+        $regular_price = 0.0;
         if ( $raw_price !== null && $raw_price !== '' ) {
-            $price = $this->parse_numeric_value( $raw_price );
+            $regular_price = $this->parse_numeric_value( $raw_price );
             // Only set price if it was successfully parsed to a positive value
             // Price of 0 is intentionally not set to avoid overwriting valid prices with invalid data
-            if ( $price > 0 ) {
-                $product->set_regular_price( (string) $price );
+            if ( $regular_price > 0 ) {
+                $product->set_regular_price( (string) $regular_price );
             }
+        }
+
+        // Handle sale price from ERP
+        $raw_sale_price = $row['SalesPrice'] ?? null;
+        $sale_price = $this->parse_numeric_value( $raw_sale_price ?? 0 );
+
+        if ( $sale_price > 0 && $regular_price > 0 && $sale_price < $regular_price ) {
+            // Set sale price if valid and strictly lower than regular price
+            $product->set_sale_price( (string) $sale_price );
+        } else {
+            // Remove sale price if empty, zero, or not lower than regular price
+            // This ensures no stale discounts remain when ERP sends empty/zero
+            $product->set_sale_price( '' );
         }
 
         // Parse quantity
