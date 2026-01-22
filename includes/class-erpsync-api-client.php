@@ -547,9 +547,10 @@ class API_Client {
             }
 
             $stock_data[] = [
-                'VendorCode' => $this->sanitize_string( $row['VendorCode'] ?? '' ),
-                'Quantity'   => $this->to_float( $row['Quantity'] ?? 0 ),
-                'Price'      => $this->to_float( $row['Price'] ?? 0 ),
+                'VendorCode'  => $this->sanitize_string( $row['VendorCode'] ?? '' ),
+                'Quantity'    => $this->to_float( $row['Quantity'] ?? 0 ),
+                'Price'       => $this->to_float( $row['Price'] ?? 0 ),
+                'SalesPrice'  => $this->to_float( $row['SalesPrice'] ?? 0 ),
             ];
         }
 
