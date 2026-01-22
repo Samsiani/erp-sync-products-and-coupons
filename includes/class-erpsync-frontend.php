@@ -60,10 +60,9 @@ class Frontend {
                 font-weight: bold;
                 margin-bottom: 10px;
                 outline: none;
-                list-style: revert;
             }
             .erp-sync-branch-summary::-webkit-details-marker {
-                display: initial;
+                display: list-item;
             }
             .erp-sync-branch-stock-list {
                 list-style: none;
