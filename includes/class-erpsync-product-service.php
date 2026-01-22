@@ -400,7 +400,23 @@ class Product_Service {
 
             // Create WC_Product_Attribute object
             $attribute = new \WC_Product_Attribute();
-            $attribute->set_id( wc_attribute_taxonomy_id_by_name( $taxonomy_slug ) );
+            
+            // Get attribute taxonomy ID - may return 0 for newly created attributes
+            $attribute_id = wc_attribute_taxonomy_id_by_name( $taxonomy_slug );
+            
+            // If attribute ID is 0, try to get it from the database directly
+            if ( ! $attribute_id ) {
+                $attribute_name = str_replace( 'pa_', '', $taxonomy_slug );
+                global $wpdb;
+                $attribute_id = (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        "SELECT attribute_id FROM {$wpdb->prefix}woocommerce_attribute_taxonomies WHERE attribute_name = %s",
+                        $attribute_name
+                    )
+                );
+            }
+            
+            $attribute->set_id( $attribute_id );
             $attribute->set_name( $taxonomy_slug );
             $attribute->set_options( [ $term_data['term_id'] ] );
             $attribute->set_visible( true );
@@ -497,9 +513,15 @@ class Product_Service {
      */
     private function set_product_stock_data( \WC_Product $product, array $row ): void {
         // Parse price (supports European decimal format with comma)
-        $price = $this->parse_numeric_value( $row['Price'] ?? 0 );
-        if ( $price >= 0 ) {
-            $product->set_regular_price( (string) $price );
+        // Only set price if we have a valid non-empty value from the API
+        $raw_price = $row['Price'] ?? null;
+        if ( $raw_price !== null && $raw_price !== '' ) {
+            $price = $this->parse_numeric_value( $raw_price );
+            // Only set price if it was successfully parsed to a positive value
+            // Price of 0 is intentionally not set to avoid overwriting valid prices with invalid data
+            if ( $price > 0 ) {
+                $product->set_regular_price( (string) $price );
+            }
         }
 
         // Parse quantity
