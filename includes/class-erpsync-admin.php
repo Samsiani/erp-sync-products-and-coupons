@@ -1,37 +1,39 @@
 <?php
-namespace WDCS;
+declare(strict_types=1);
+
+namespace ERPSync;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Admin {
 
-    const MENU_SLUG = 'wdcs-discount-cards';
+    const MENU_SLUG = 'erp-sync-settings';
 
-    public static function init() {
+    public static function init(): void {
         add_action( 'admin_menu', [ __CLASS__, 'menu' ] );
 
         // Settings & core actions
-        add_action( 'admin_post_wdcs_save_settings', [ __CLASS__, 'handle_save_settings' ] );
-        add_action( 'admin_post_wdcs_import_new', [ __CLASS__, 'handle_import_new' ] );
-        add_action( 'admin_post_wdcs_full_sync', [ __CLASS__, 'handle_full_sync' ] );
-        add_action( 'admin_post_wdcs_update_existing', [ __CLASS__, 'handle_update_existing' ] );
-        add_action( 'admin_post_wdcs_force_import_all', [ __CLASS__, 'handle_force_import_all' ] );
-        add_action( 'admin_post_wdcs_test_connection', [ __CLASS__, 'handle_test_connection' ] );
-        add_action( 'admin_post_wdcs_raw_dump', [ __CLASS__, 'handle_raw_dump' ] );
-        add_action( 'admin_post_wdcs_products_test', [ __CLASS__, 'handle_products_test' ] );
-        add_action( 'admin_post_wdcs_generate_mock', [ __CLASS__, 'handle_generate_mock' ] );
+        add_action( 'admin_post_erp_sync_save_settings', [ __CLASS__, 'handle_save_settings' ] );
+        add_action( 'admin_post_erp_sync_import_new', [ __CLASS__, 'handle_import_new' ] );
+        add_action( 'admin_post_erp_sync_full_sync', [ __CLASS__, 'handle_full_sync' ] );
+        add_action( 'admin_post_erp_sync_update_existing', [ __CLASS__, 'handle_update_existing' ] );
+        add_action( 'admin_post_erp_sync_force_import_all', [ __CLASS__, 'handle_force_import_all' ] );
+        add_action( 'admin_post_erp_sync_test_connection', [ __CLASS__, 'handle_test_connection' ] );
+        add_action( 'admin_post_erp_sync_raw_dump', [ __CLASS__, 'handle_raw_dump' ] );
+        add_action( 'admin_post_erp_sync_products_test', [ __CLASS__, 'handle_products_test' ] );
+        add_action( 'admin_post_erp_sync_generate_mock', [ __CLASS__, 'handle_generate_mock' ] );
 
         // Cron & diagnostics
-        add_action( 'admin_post_wdcs_run_cron_now', [ __CLASS__, 'handle_run_cron_now' ] );
-        add_action( 'admin_post_wdcs_download_last_xml', [ __CLASS__, 'handle_download_last_xml' ] );
-        add_action( 'admin_post_wdcs_download_last_request', [ __CLASS__, 'handle_download_last_request' ] );
-        add_action( 'admin_post_wdcs_download_last_fault', [ __CLASS__, 'handle_download_last_fault' ] );
-        add_action( 'admin_post_wdcs_download_last_headers', [ __CLASS__, 'handle_download_last_headers' ] );
-        add_action( 'admin_post_wdcs_download_last_meta', [ __CLASS__, 'handle_download_last_meta' ] );
+        add_action( 'admin_post_erp_sync_run_cron_now', [ __CLASS__, 'handle_run_cron_now' ] );
+        add_action( 'admin_post_erp_sync_download_last_xml', [ __CLASS__, 'handle_download_last_xml' ] );
+        add_action( 'admin_post_erp_sync_download_last_request', [ __CLASS__, 'handle_download_last_request' ] );
+        add_action( 'admin_post_erp_sync_download_last_fault', [ __CLASS__, 'handle_download_last_fault' ] );
+        add_action( 'admin_post_erp_sync_download_last_headers', [ __CLASS__, 'handle_download_last_headers' ] );
+        add_action( 'admin_post_erp_sync_download_last_meta', [ __CLASS__, 'handle_download_last_meta' ] );
 
         // AJAX handlers
-        add_action( 'wp_ajax_wdcs_sync_progress', [ __CLASS__, 'ajax_sync_progress' ] );
-        add_action( 'wp_ajax_wdcs_quick_edit_coupon', [ __CLASS__, 'ajax_quick_edit_coupon' ] );
+        add_action( 'wp_ajax_erp_sync_sync_progress', [ __CLASS__, 'ajax_sync_progress' ] );
+        add_action( 'wp_ajax_erp_sync_quick_edit_coupon', [ __CLASS__, 'ajax_quick_edit_coupon' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
@@ -39,19 +41,19 @@ class Admin {
         add_filter( 'manage_edit-shop_coupon_sortable_columns', [ __CLASS__, 'sortable_columns' ] );
     }
 
-    public static function menu() {
+    public static function menu(): void {
         add_submenu_page(
             'woocommerce',
-            __( 'Discount Cards Sync', 'wdcs' ),
-            __( 'Discount Cards Sync', 'wdcs' ),
+            __( 'ERP Sync', 'erp-sync' ),
+            __( 'ERP Sync', 'erp-sync' ),
             'manage_woocommerce',
             self::MENU_SLUG,
             [ __CLASS__, 'render_page' ]
         );
     }
 
-    public static function handle_save_settings() {
-        check_admin_referer( 'wdcs_settings' );
+    public static function handle_save_settings(): void {
+        check_admin_referer( 'erp_sync_settings' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
 
         // API Settings
@@ -73,9 +75,9 @@ class Admin {
 
         // Cron Settings
         $cron_enabled  = isset( $_POST['cron_enabled'] ) ? 1 : 0;
-        $cron_interval = (string) ( $_POST['cron_interval'] ?? 'wdcs_10min' );
-        if ( ! in_array( $cron_interval, [ 'wdcs_5min','wdcs_10min','wdcs_15min' ], true ) ) {
-            $cron_interval = 'wdcs_10min';
+        $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_10min' );
+        if ( ! in_array( $cron_interval, [ 'erp_sync_5min','erp_sync_10min','erp_sync_15min' ], true ) ) {
+            $cron_interval = 'erp_sync_10min';
         }
         update_option( Cron::OPTION_CRON_ENABLED, $cron_enabled );
         update_option( Cron::OPTION_CRON_INTERVAL, $cron_interval );
@@ -93,7 +95,7 @@ class Admin {
         $webhook_events = isset( $_POST['webhook_events'] ) ? array_map( 'sanitize_text_field', (array) $_POST['webhook_events'] ) : [];
         update_option( Webhook::OPTION_WEBHOOK_EVENTS, $webhook_events );
 
-        if ( class_exists( '\WDCS\Cron' ) ) {
+        if ( class_exists( '\ERPSync\Cron' ) ) {
             Cron::reschedule_after_settings_change();
         }
 
@@ -101,8 +103,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_update_existing() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_update_existing(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         
         try {
@@ -123,8 +125,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_force_import_all() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_force_import_all(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         
         try {
@@ -147,8 +149,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_import_new() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_import_new(): void {
+        check_admin_referer( 'erp_sync_actions' );
         try {
             $svc = new Sync_Service( new API_Client() );
             $res = $svc->import_new_only();
@@ -167,8 +169,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_full_sync() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_full_sync(): void {
+        check_admin_referer( 'erp_sync_actions' );
         try {
             $svc = new Sync_Service( new API_Client() );
             $res = $svc->full_sync();
@@ -188,8 +190,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_test_connection() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_test_connection(): void {
+        check_admin_referer( 'erp_sync_actions' );
         $api = new API_Client();
         $res = $api->test_connection();
         $args = [ 'page' => self::MENU_SLUG ];
@@ -203,8 +205,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_raw_dump() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_raw_dump(): void {
+        check_admin_referer( 'erp_sync_actions' );
         $api = new API_Client();
         try {
             $api->fetch_cards();
@@ -215,8 +217,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_products_test() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_products_test(): void {
+        check_admin_referer( 'erp_sync_actions' );
         $api = new API_Client();
         try {
             $api->fetch_products_raw();
@@ -227,8 +229,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_generate_mock() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_generate_mock(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
 
         $svc = new Sync_Service( new API_Client() );
@@ -255,8 +257,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_run_cron_now() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_run_cron_now(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         try {
             Cron::run();
@@ -267,8 +269,8 @@ class Admin {
         exit;
     }
 
-    public static function handle_download_last_xml() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_download_last_xml(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         $xml = get_option( API_Client::OPTION_LAST_RAW_XML, '' );
         if ( empty( $xml ) ) {
@@ -276,13 +278,13 @@ class Admin {
             exit;
         }
         header( 'Content-Type: application/xml; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="wdcs-last-soap-response.xml"' );
+        header( 'Content-Disposition: attachment; filename="erp-sync-last-soap-response.xml"' );
         echo $xml;
         exit;
     }
 
-    public static function handle_download_last_request() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_download_last_request(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         $xml = get_option( API_Client::OPTION_LAST_REQUEST_XML, '' );
         if ( empty( $xml ) ) {
@@ -290,13 +292,13 @@ class Admin {
             exit;
         }
         header( 'Content-Type: application/xml; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="wdcs-last-soap-request.xml"' );
+        header( 'Content-Disposition: attachment; filename="erp-sync-last-soap-request.xml"' );
         echo $xml;
         exit;
     }
 
-    public static function handle_download_last_fault() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_download_last_fault(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         $fault = get_option( API_Client::OPTION_LAST_SOAP_FAULT, '' );
         if ( empty( $fault ) ) {
@@ -304,13 +306,13 @@ class Admin {
             exit;
         }
         header( 'Content-Type: text/plain; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="wdcs-last-soap-fault.txt"' );
+        header( 'Content-Disposition: attachment; filename="erp-sync-last-soap-fault.txt"' );
         echo $fault;
         exit;
     }
 
-    public static function handle_download_last_headers() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_download_last_headers(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         $reqH = get_option( API_Client::OPTION_LAST_REQUEST_HEADERS, '' );
         $resH = get_option( API_Client::OPTION_LAST_RESPONSE_HEADERS, '' );
@@ -319,13 +321,13 @@ class Admin {
             exit;
         }
         header( 'Content-Type: text/plain; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="wdcs-last-soap-headers.txt"' );
+        header( 'Content-Disposition: attachment; filename="erp-sync-last-soap-headers.txt"' );
         echo "=== Last SOAP Request Headers ===\n".$reqH."\n\n=== Last SOAP Response Headers ===\n".$resH;
         exit;
     }
 
-    public static function handle_download_last_meta() {
-        check_admin_referer( 'wdcs_actions' );
+    public static function handle_download_last_meta(): void {
+        check_admin_referer( 'erp_sync_actions' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
         $meta = get_option( API_Client::OPTION_LAST_INFOCARDS_META, '' );
         if ( empty( $meta ) ) {
@@ -333,25 +335,25 @@ class Admin {
             exit;
         }
         header( 'Content-Type: application/json; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="wdcs-last-infocards-meta.json"' );
+        header( 'Content-Disposition: attachment; filename="erp-sync-last-infocards-meta.json"' );
         echo $meta;
         exit;
     }
 
-    public static function ajax_sync_progress() {
-        check_ajax_referer( 'wdcs_ajax', 'nonce' );
+    public static function ajax_sync_progress(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) {
             wp_send_json_error( [ 'message' => 'Permission denied' ] );
         }
-        $progress = get_transient( 'wdcs_sync_progress' );
+        $progress = get_transient( 'erp_sync_sync_progress' );
         if ( $progress === false ) {
             wp_send_json_success( [ 'progress' => 0, 'status' => 'idle' ] );
         }
         wp_send_json_success( $progress );
     }
 
-    public static function ajax_quick_edit_coupon() {
-        check_ajax_referer( 'wdcs_ajax', 'nonce' );
+    public static function ajax_quick_edit_coupon(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) {
             wp_send_json_error( [ 'message' => 'Permission denied' ] );
         }
@@ -366,11 +368,11 @@ class Admin {
 
         switch ( $field ) {
             case 'base_discount':
-                update_post_meta( $coupon_id, '_wdcs_base_discount', max( 0, intval( $value ) ) );
+                update_post_meta( $coupon_id, '_erp_sync_base_discount', max( 0, intval( $value ) ) );
                 update_post_meta( $coupon_id, 'coupon_amount', max( 0, intval( $value ) ) );
                 break;
             case 'is_deleted':
-                update_post_meta( $coupon_id, '_wdcs_is_deleted', $value === 'yes' ? 'yes' : 'no' );
+                update_post_meta( $coupon_id, '_erp_sync_is_deleted', $value === 'yes' ? 'yes' : 'no' );
                 break;
             default:
                 wp_send_json_error( [ 'message' => 'Invalid field' ] );
@@ -379,7 +381,7 @@ class Admin {
         wp_send_json_success( [ 'message' => 'Updated successfully' ] );
     }
 
-    private static function render_notices() {
+    private static function render_notices(): void {
         $notices = [];
         $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced'];
         
@@ -388,59 +390,59 @@ class Admin {
             
             switch ( $k ) {
                 case 'saved':
-                    $notices[] = ['success', __( 'Settings saved successfully.', 'wdcs' )];
+                    $notices[] = ['success', __( 'Settings saved successfully.', 'erp-sync' )];
                     break;
                 case 'imported':
-                    $notices[] = ['info', sprintf( __('Imported %d new codes (Remote total: %d)', 'wdcs'), intval($_GET['imported']), intval($_GET['remote'] ?? 0) )];
+                    $notices[] = ['info', sprintf( __('Imported %d new codes (Remote total: %d)', 'erp-sync'), intval($_GET['imported']), intval($_GET['remote'] ?? 0) )];
                     break;
                 case 'updated':
                     if ( ! isset($_GET['created']) ) {
-                        $notices[] = ['info', sprintf( __('Updated %d existing coupons (Remote total: %d)', 'wdcs'), intval($_GET['updated']), intval($_GET['remote'] ?? 0) )];
+                        $notices[] = ['info', sprintf( __('Updated %d existing coupons (Remote total: %d)', 'erp-sync'), intval($_GET['updated']), intval($_GET['remote'] ?? 0) )];
                     }
                     break;
                 case 'created':
                     if ( isset($_GET['updated']) ) {
-                        $msg = sprintf( __('Full Sync: Created %d, Updated %d (Remote total: %d)', 'wdcs'), intval($_GET['created']), intval($_GET['updated']), intval($_GET['remote'] ?? 0) );
+                        $msg = sprintf( __('Full Sync: Created %d, Updated %d (Remote total: %d)', 'erp-sync'), intval($_GET['created']), intval($_GET['updated']), intval($_GET['remote'] ?? 0) );
                         if ( isset($_GET['forced']) ) {
-                            $msg = sprintf( __('Force Import All: Created %d, Updated %d (Remote total: %d)', 'wdcs'), intval($_GET['created']), intval($_GET['updated']), intval($_GET['remote'] ?? 0) );
+                            $msg = sprintf( __('Force Import All: Created %d, Updated %d (Remote total: %d)', 'erp-sync'), intval($_GET['created']), intval($_GET['updated']), intval($_GET['remote'] ?? 0) );
                         }
                         $notices[] = ['success', $msg];
                     }
                     break;
                 case 'test':
-                    $notices[] = [ $_GET['test'] === 'ok' ? 'success' : 'error', $_GET['test'] === 'ok' ? __( 'Connection test successful!', 'wdcs' ) : sprintf( __('Test failed: %s', 'wdcs'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
+                    $notices[] = [ $_GET['test'] === 'ok' ? 'success' : 'error', $_GET['test'] === 'ok' ? __( 'Connection test successful!', 'erp-sync' ) : sprintf( __('Test failed: %s', 'erp-sync'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
                     break;
                 case 'rawdump':
-                    $notices[] = [ $_GET['rawdump'] === 'done' ? 'success' : 'error', $_GET['rawdump'] === 'done' ? __('Raw dump executed.', 'wdcs') : sprintf( __('Raw dump failed: %s','wdcs'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
+                    $notices[] = [ $_GET['rawdump'] === 'done' ? 'success' : 'error', $_GET['rawdump'] === 'done' ? __('Raw dump executed.', 'erp-sync') : sprintf( __('Raw dump failed: %s','erp-sync'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
                     break;
                 case 'prodtest':
-                    $notices[] = [ $_GET['prodtest'] === 'ok' ? 'success' : 'error', $_GET['prodtest'] === 'ok' ? __('Products test executed.', 'wdcs') : sprintf( __('Products test failed: %s','wdcs'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
+                    $notices[] = [ $_GET['prodtest'] === 'ok' ? 'success' : 'error', $_GET['prodtest'] === 'ok' ? __('Products test executed.', 'erp-sync') : sprintf( __('Products test failed: %s','erp-sync'), esc_html( urldecode($_GET['error'] ?? '') ) ) ];
                     break;
                 case 'mockgen':
                     if ( $_GET['mockgen'] === 'done' ) {
-                        $notices[] = ['success', sprintf( __('Mock cards generated. Created %d, Updated %d.', 'wdcs'), intval($_GET['created'] ?? 0), intval($_GET['updated'] ?? 0) ) ];
+                        $notices[] = ['success', sprintf( __('Mock cards generated. Created %d, Updated %d.', 'erp-sync'), intval($_GET['created'] ?? 0), intval($_GET['updated'] ?? 0) ) ];
                     }
                     break;
                 case 'syncerr':
-                    $notices[] = ['error', sprintf( __('Sync failed: %s', 'wdcs' ), esc_html( urldecode($_GET['syncerr']) ) )];
+                    $notices[] = ['error', sprintf( __('Sync failed: %s', 'erp-sync' ), esc_html( urldecode($_GET['syncerr']) ) )];
                     break;
                 case 'cronrun':
-                    $notices[] = [ $_GET['cronrun'] === 'ok' ? 'success' : 'error', $_GET['cronrun'] === 'ok' ? __('Scheduled import executed now.', 'wdcs') : sprintf( __('Manual cron failed: %s', 'wdcs' ), esc_html( urldecode( $_GET['error'] ?? '' ) ) ) ];
+                    $notices[] = [ $_GET['cronrun'] === 'ok' ? 'success' : 'error', $_GET['cronrun'] === 'ok' ? __('Scheduled import executed now.', 'erp-sync') : sprintf( __('Manual cron failed: %s', 'erp-sync' ), esc_html( urldecode( $_GET['error'] ?? '' ) ) ) ];
                     break;
                 case 'xmldl':
-                    if ( $_GET['xmldl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP XML available.', 'wdcs' )];
+                    if ( $_GET['xmldl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP XML available.', 'erp-sync' )];
                     break;
                 case 'reqdl':
-                    if ( $_GET['reqdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP Request available.', 'wdcs' )];
+                    if ( $_GET['reqdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP Request available.', 'erp-sync' )];
                     break;
                 case 'faultdl':
-                    if ( $_GET['faultdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP Fault captured.', 'wdcs' )];
+                    if ( $_GET['faultdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP Fault captured.', 'erp-sync' )];
                     break;
                 case 'headersdl':
-                    if ( $_GET['headersdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP headers captured.', 'wdcs' )];
+                    if ( $_GET['headersdl'] === 'empty' ) $notices[] = ['error', __( 'No SOAP headers captured.', 'erp-sync' )];
                     break;
                 case 'metadl':
-                    if ( $_GET['metadl'] === 'empty' ) $notices[] = ['error', __( 'No meta captured.', 'wdcs' )];
+                    if ( $_GET['metadl'] === 'empty' ) $notices[] = ['error', __( 'No meta captured.', 'erp-sync' )];
                     break;
             }
         }
@@ -452,7 +454,7 @@ class Admin {
         }
     }
 
-    public static function render_page() {
+    public static function render_page(): void {
         if ( ! current_user_can( 'manage_woocommerce' ) ) return;
 
         $wsdl           = get_option( API_Client::OPTION_WSDL );
@@ -486,112 +488,112 @@ class Admin {
 
         // Cron
         $cron_enabled   = (bool) get_option( Cron::OPTION_CRON_ENABLED, false );
-        $cron_interval  = (string) get_option( Cron::OPTION_CRON_INTERVAL, 'wdcs_10min' );
-        $cron_next      = class_exists('\WDCS\Cron') ? Cron::next_run_human() : '—';
+        $cron_interval  = (string) get_option( Cron::OPTION_CRON_INTERVAL, 'erp_sync_10min' );
+        $cron_next      = class_exists('\ERPSync\Cron') ? Cron::next_run_human() : '—';
         $cron_last_res  = get_option( Cron::OPTION_CRON_LAST_RESULT, [] );
 
         ?>
-        <div class="wrap wdcs-admin-wrap">
-            <h1><?php esc_html_e( 'Discount Cards Synchronization', 'wdcs' ); ?> <span class="wdcs-version">v<?php echo esc_html( WDCS_VERSION ); ?></span></h1>
+        <div class="wrap erp-sync-admin-wrap">
+            <h1><?php esc_html_e( 'ERP Sync Products and Coupons', 'erp-sync' ); ?> <span class="erp-sync-version">v<?php echo esc_html( ERPSYNC_VERSION ); ?></span></h1>
             
             <?php self::render_notices(); ?>
 
-            <div id="wdcs-progress-container" style="display:none;" class="wdcs-progress-wrap">
-                <div class="wdcs-progress-bar">
-                    <div class="wdcs-progress-fill" style="width:0%"></div>
+            <div id="erp-sync-progress-container" style="display:none;" class="erp-sync-progress-wrap">
+                <div class="erp-sync-progress-bar">
+                    <div class="erp-sync-progress-fill" style="width:0%"></div>
                 </div>
-                <div class="wdcs-progress-text">Syncing...</div>
+                <div class="erp-sync-progress-text">Syncing...</div>
             </div>
 
-            <h2 class="nav-tab-wrapper wdcs-nav-tabs">
-                <a href="#tab-settings" class="nav-tab nav-tab-active"><?php _e('Settings', 'wdcs'); ?></a>
-                <a href="#tab-actions" class="nav-tab"><?php _e('Actions', 'wdcs'); ?></a>
-                <a href="#tab-webhooks" class="nav-tab"><?php _e('Webhooks', 'wdcs'); ?></a>
-                <a href="#tab-security" class="nav-tab"><?php _e('Security', 'wdcs'); ?></a>
-                <a href="#tab-diagnostics" class="nav-tab"><?php _e('Diagnostics', 'wdcs'); ?></a>
+            <h2 class="nav-tab-wrapper erp-sync-nav-tabs">
+                <a href="#tab-settings" class="nav-tab nav-tab-active"><?php _e('Settings', 'erp-sync'); ?></a>
+                <a href="#tab-actions" class="nav-tab"><?php _e('Actions', 'erp-sync'); ?></a>
+                <a href="#tab-webhooks" class="nav-tab"><?php _e('Webhooks', 'erp-sync'); ?></a>
+                <a href="#tab-security" class="nav-tab"><?php _e('Security', 'erp-sync'); ?></a>
+                <a href="#tab-diagnostics" class="nav-tab"><?php _e('Diagnostics', 'erp-sync'); ?></a>
             </h2>
 
-            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wdcs-settings-form">
-                <?php wp_nonce_field( 'wdcs_settings' ); ?>
-                <input type="hidden" name="action" value="wdcs_save_settings" />
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="erp-sync-settings-form">
+                <?php wp_nonce_field( 'erp_sync_settings' ); ?>
+                <input type="hidden" name="action" value="erp_sync_save_settings" />
 
                 <!-- Settings Tab -->
-                <div id="tab-settings" class="wdcs-tab-content">
-                    <h2><?php _e( 'API Settings', 'wdcs' ); ?></h2>
+                <div id="tab-settings" class="erp-sync-tab-content">
+                    <h2><?php _e( 'API Settings', 'erp-sync' ); ?></h2>
                     <table class="form-table">
                         <tr>
-                            <th><label for="wsdl"><?php _e('WSDL URL','wdcs'); ?></label></th>
+                            <th><label for="wsdl"><?php _e('WSDL URL','erp-sync'); ?></label></th>
                             <td>
                                 <input type="text" class="regular-text" id="wsdl" name="wsdl" value="<?php echo esc_attr( $wsdl ); ?>">
-                                <p class="description"><?php _e('Example:', 'wdcs'); ?> http://92.241.78.182:8080/artsw2022/ws/WebExchange.1cws?wsdl</p>
+                                <p class="description"><?php _e('Example:', 'erp-sync'); ?> http://92.241.78.182:8080/artsw2022/ws/WebExchange.1cws?wsdl</p>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="force_location"><?php _e('Force Endpoint','wdcs'); ?></label></th>
+                            <th><label for="force_location"><?php _e('Force Endpoint','erp-sync'); ?></label></th>
                             <td>
                                 <input type="text" class="regular-text" id="force_location" name="force_location" value="<?php echo esc_attr( $force_location ); ?>">
-                                <p class="description"><?php _e('Full URL without ?wsdl (leave blank to rely on WSDL).', 'wdcs'); ?></p>
+                                <p class="description"><?php _e('Full URL without ?wsdl (leave blank to rely on WSDL).', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="username"><?php _e('Username','wdcs'); ?></label></th>
+                            <th><label for="username"><?php _e('Username','erp-sync'); ?></label></th>
                             <td><input type="text" class="regular-text" id="username" name="username" value="<?php echo esc_attr( $username ); ?>"></td>
                         </tr>
                         <tr>
-                            <th><label for="password"><?php _e('Password','wdcs'); ?></label></th>
+                            <th><label for="password"><?php _e('Password','erp-sync'); ?></label></th>
                             <td>
-                                <input type="password" class="regular-text" id="password" name="password" value="" placeholder="<?php esc_attr_e('(leave blank to keep)','wdcs'); ?>">
-                                <p class="description"><?php _e('Password is encrypted before storage.', 'wdcs'); ?> 🔒</p>
+                                <input type="password" class="regular-text" id="password" name="password" value="" placeholder="<?php esc_attr_e('(leave blank to keep)','erp-sync'); ?>">
+                                <p class="description"><?php _e('Password is encrypted before storage.', 'erp-sync'); ?> 🔒</p>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="timeout"><?php _e('Timeout (sec)','wdcs'); ?></label></th>
+                            <th><label for="timeout"><?php _e('Timeout (sec)','erp-sync'); ?></label></th>
                             <td><input type="number" min="5" id="timeout" name="timeout" value="<?php echo esc_attr( $timeout ); ?>"></td>
                         </tr>
                         <tr>
-                            <th><label for="soap_version"><?php _e('SOAP Version','wdcs'); ?></label></th>
+                            <th><label for="soap_version"><?php _e('SOAP Version','erp-sync'); ?></label></th>
                             <td>
                                 <select id="soap_version" name="soap_version">
                                     <option value="11" <?php selected( $soap_version, 11 ); ?>>SOAP 1.1</option>
                                     <option value="12" <?php selected( $soap_version, 12 ); ?>>SOAP 1.2</option>
                                 </select>
-                                <p class="description"><?php _e('Switch if one binding causes faults or empty responses.', 'wdcs'); ?></p>
+                                <p class="description"><?php _e('Switch if one binding causes faults or empty responses.', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><?php _e('Last Sync','wdcs'); ?></th>
+                            <th><?php _e('Last Sync','erp-sync'); ?></th>
                             <td><strong><?php echo esc_html( $last_sync ); ?></strong></td>
                         </tr>
                         <tr>
-                            <th><label for="debug"><?php _e('Enable Debug Trace','wdcs'); ?></label></th>
+                            <th><label for="debug"><?php _e('Enable Debug Trace','erp-sync'); ?></label></th>
                             <td>
-                                <label><input type="checkbox" id="debug" name="debug" value="1" <?php checked( $debug ); ?>> <?php _e('Capture detailed SOAP request/response, headers & performance metrics.', 'wdcs'); ?></label>
+                                <label><input type="checkbox" id="debug" name="debug" value="1" <?php checked( $debug ); ?>> <?php _e('Capture detailed SOAP request/response, headers & performance metrics.', 'erp-sync'); ?></label>
                             </td>
                         </tr>
                     </table>
 
-                    <h2><?php _e( 'Automation', 'wdcs' ); ?></h2>
+                    <h2><?php _e( 'Automation', 'erp-sync' ); ?></h2>
                     <table class="form-table">
                         <tr>
-                            <th><label for="cron_enabled"><?php _e('Enable Scheduled Import','wdcs'); ?></label></th>
+                            <th><label for="cron_enabled"><?php _e('Enable Scheduled Import','erp-sync'); ?></label></th>
                             <td>
-                                <label><input type="checkbox" id="cron_enabled" name="cron_enabled" value="1" <?php checked( $cron_enabled ); ?>> <?php _e('Run Import New automatically.', 'wdcs'); ?></label>
+                                <label><input type="checkbox" id="cron_enabled" name="cron_enabled" value="1" <?php checked( $cron_enabled ); ?>> <?php _e('Run Import New automatically.', 'erp-sync'); ?></label>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="cron_interval"><?php _e('Import Frequency','wdcs'); ?></label></th>
+                            <th><label for="cron_interval"><?php _e('Import Frequency','erp-sync'); ?></label></th>
                             <td>
                                 <select id="cron_interval" name="cron_interval">
-                                    <option value="wdcs_5min"  <?php selected( $cron_interval, 'wdcs_5min'  ); ?>><?php _e('Every 5 minutes','wdcs'); ?></option>
-                                    <option value="wdcs_10min" <?php selected( $cron_interval, 'wdcs_10min' ); ?>><?php _e('Every 10 minutes','wdcs'); ?></option>
-                                    <option value="wdcs_15min" <?php selected( $cron_interval, 'wdcs_15min' ); ?>><?php _e('Every 15 minutes','wdcs'); ?></option>
+                                    <option value="erp_sync_5min"  <?php selected( $cron_interval, 'erp_sync_5min'  ); ?>><?php _e('Every 5 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_10min" <?php selected( $cron_interval, 'erp_sync_10min' ); ?>><?php _e('Every 10 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_15min" <?php selected( $cron_interval, 'erp_sync_15min' ); ?>><?php _e('Every 15 minutes','erp-sync'); ?></option>
                                 </select>
                                 <p class="description">
-                                    <?php printf( __('Next run: %s', 'wdcs' ), '<strong>' . esc_html( $cron_next ) . '</strong>' ); ?>
+                                    <?php printf( __('Next run: %s', 'erp-sync' ), '<strong>' . esc_html( $cron_next ) . '</strong>' ); ?>
                                     <?php
                                     if ( is_array( $cron_last_res ) && ! empty( $cron_last_res ) ) {
                                         echo '<br>'.esc_html( sprintf(
-                                            __('Last run: %s, success=%s, created=%d, remote=%d, duration=%sms', 'wdcs'),
+                                            __('Last run: %s, success=%s, created=%d, remote=%d, duration=%sms', 'erp-sync'),
                                             $cron_last_res['time'] ?? '—',
                                             ! empty( $cron_last_res['success'] ) ? 'yes' : 'no',
                                             (int) ( $cron_last_res['created'] ?? 0 ),
@@ -599,7 +601,7 @@ class Admin {
                                             (int) ( $cron_last_res['duration_ms'] ?? 0 )
                                         ) );
                                         if ( ! empty( $cron_last_res['error'] ) ) {
-                                            echo '<br><span class="wdcs-error">'.esc_html( sprintf( __('Error: %s','wdcs' ), $cron_last_res['error'] ) ).'</span>';
+                                            echo '<br><span class="erp-sync-error">'.esc_html( sprintf( __('Error: %s','erp-sync' ), $cron_last_res['error'] ) ).'</span>';
                                         }
                                     }
                                     ?>
@@ -610,105 +612,105 @@ class Admin {
                 </div>
 
                 <!-- Actions Tab -->
-                <div id="tab-actions" class="wdcs-tab-content" style="display:none;">
-                    <h2><?php _e( 'Manual Actions', 'wdcs' ); ?></h2>
-                    <p class="description"><?php _e('Use these buttons to manually trigger synchronization operations.', 'wdcs'); ?></p>
+                <div id="tab-actions" class="erp-sync-tab-content" style="display:none;">
+                    <h2><?php _e( 'Manual Actions', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Use these buttons to manually trigger synchronization operations.', 'erp-sync'); ?></p>
                     
-                    <div class="wdcs-action-buttons">
+                    <div class="erp-sync-action-buttons">
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_import_new">
-                            <?php submit_button( __('Import New Codes Only','wdcs'), 'secondary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Import only codes that don\'t exist locally.', 'wdcs'); ?></p>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_import_new">
+                            <?php submit_button( __('Import New Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
+                            <p class="description"><?php _e('Import only codes that don\'t exist locally.', 'erp-sync'); ?></p>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_update_existing">
-                            <?php submit_button( __('Update Existing Codes Only','wdcs'), 'secondary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Update only codes that already exist locally.', 'wdcs'); ?> ✨ <strong><?php _e('NEW', 'wdcs'); ?></strong></p>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_update_existing">
+                            <?php submit_button( __('Update Existing Codes Only','erp-sync'), 'secondary', 'submit', false ); ?>
+                            <p class="description"><?php _e('Update only codes that already exist locally.', 'erp-sync'); ?></p>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_full_sync">
-                            <?php submit_button( __('Full Sync (Create + Update)','wdcs'), 'primary', 'submit', false ); ?>
-                            <p class="description"><?php _e('Sync all codes: create new and update existing.', 'wdcs'); ?></p>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_full_sync">
+                            <?php submit_button( __('Full Sync (Create + Update)','erp-sync'), 'primary', 'submit', false ); ?>
+                            <p class="description"><?php _e('Sync all codes: create new and update existing.', 'erp-sync'); ?></p>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_force_import_all">
-                            <?php submit_button( __('Force Import ALL','wdcs'), 'delete', 'submit', false, ['onclick' => 'return confirm("'.__('This will overwrite ALL existing coupons. Continue?', 'wdcs').'");'] ); ?>
-                            <p class="description"><?php _e('Force re-import everything from 1C, overwriting local data.', 'wdcs'); ?> ⚠️ <strong><?php _e('NEW', 'wdcs'); ?></strong></p>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_force_import_all">
+                            <?php submit_button( __('Force Import ALL','erp-sync'), 'delete', 'submit', false, ['onclick' => 'return confirm("'.__('This will overwrite ALL existing coupons. Continue?', 'erp-sync').'");'] ); ?>
+                            <p class="description"><?php _e('Force re-import everything from 1C, overwriting local data.', 'erp-sync'); ?> ⚠️</p>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_test_connection">
-                            <?php submit_button( __('Test Connection (non-destructive)','wdcs'), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_test_connection">
+                            <?php submit_button( __('Test Connection (non-destructive)','erp-sync'), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_raw_dump">
-                            <?php submit_button( __('Quick Raw Dump','wdcs'), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_raw_dump">
+                            <?php submit_button( __('Quick Raw Dump','erp-sync'), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_products_test">
-                            <?php submit_button( __('Test Products','wdcs'), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_products_test">
+                            <?php submit_button( __('Test Products','erp-sync'), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_generate_mock">
-                            <?php submit_button( __('Generate Mock Cards','wdcs'), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_generate_mock">
+                            <?php submit_button( __('Generate Mock Cards','erp-sync'), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_run_cron_now">
-                            <?php submit_button( __('Run Scheduled Import Now','wdcs'), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_run_cron_now">
+                            <?php submit_button( __('Run Scheduled Import Now','erp-sync'), 'secondary', 'submit', false ); ?>
                         </form>
                     </div>
                 </div>
 
                 <!-- Webhooks Tab -->
-                <div id="tab-webhooks" class="wdcs-tab-content" style="display:none;">
-                    <h2><?php _e( 'Webhook Configuration', 'wdcs' ); ?></h2>
-                    <p class="description"><?php _e('Send real-time notifications to your 1C server when events occur.', 'wdcs'); ?></p>
+                <div id="tab-webhooks" class="erp-sync-tab-content" style="display:none;">
+                    <h2><?php _e( 'Webhook Configuration', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Send real-time notifications to your 1C server when events occur.', 'erp-sync'); ?></p>
                     
                     <table class="form-table">
                         <tr>
-                            <th><label for="webhook_enabled"><?php _e('Enable Webhooks','wdcs'); ?></label></th>
+                            <th><label for="webhook_enabled"><?php _e('Enable Webhooks','erp-sync'); ?></label></th>
                             <td>
-                                <label><input type="checkbox" id="webhook_enabled" name="webhook_enabled" value="1" <?php checked( $webhook_enabled ); ?>> <?php _e('Send webhook notifications to 1C server.', 'wdcs'); ?></label>
+                                <label><input type="checkbox" id="webhook_enabled" name="webhook_enabled" value="1" <?php checked( $webhook_enabled ); ?>> <?php _e('Send webhook notifications to 1C server.', 'erp-sync'); ?></label>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="webhook_url"><?php _e('Webhook URL','wdcs'); ?></label></th>
+                            <th><label for="webhook_url"><?php _e('Webhook URL','erp-sync'); ?></label></th>
                             <td>
                                 <input type="url" class="regular-text" id="webhook_url" name="webhook_url" value="<?php echo esc_attr( $webhook_url ); ?>" placeholder="https://your-1c-server.com/webhook">
-                                <p class="description"><?php _e('The endpoint URL to receive webhook notifications.', 'wdcs'); ?></p>
+                                <p class="description"><?php _e('The endpoint URL to receive webhook notifications.', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="webhook_secret"><?php _e('Webhook Secret','wdcs'); ?></label></th>
+                            <th><label for="webhook_secret"><?php _e('Webhook Secret','erp-sync'); ?></label></th>
                             <td>
-                                <input type="text" class="regular-text" id="webhook_secret" name="webhook_secret" value="<?php echo esc_attr( $webhook_secret ); ?>" placeholder="<?php esc_attr_e('Optional secret key', 'wdcs'); ?>">
-                                <p class="description"><?php _e('Optional secret key for webhook signature verification (HMAC-SHA256).', 'wdcs'); ?></p>
+                                <input type="text" class="regular-text" id="webhook_secret" name="webhook_secret" value="<?php echo esc_attr( $webhook_secret ); ?>" placeholder="<?php esc_attr_e('Optional secret key', 'erp-sync'); ?>">
+                                <p class="description"><?php _e('Optional secret key for webhook signature verification (HMAC-SHA256).', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><?php _e('Events to Track','wdcs'); ?></th>
+                            <th><?php _e('Events to Track','erp-sync'); ?></th>
                             <td>
                                 <?php
                                 $available_events = [
-                                    'coupon.applied'   => __( 'Coupon Applied', 'wdcs' ),
-                                    'coupon.removed'   => __( 'Coupon Removed', 'wdcs' ),
-                                    'order.completed'  => __( 'Order Completed', 'wdcs' ),
+                                    'coupon.applied'   => __( 'Coupon Applied', 'erp-sync' ),
+                                    'coupon.removed'   => __( 'Coupon Removed', 'erp-sync' ),
+                                    'order.completed'  => __( 'Order Completed', 'erp-sync' ),
                                 ];
                                 foreach ( $available_events as $event => $label ) {
                                     $checked = in_array( $event, $webhook_events, true ) ? 'checked' : '';
@@ -718,202 +720,202 @@ class Admin {
                                     echo '</label>';
                                 }
                                 ?>
-                                <p class="description"><?php _e('Select which events should trigger webhooks.', 'wdcs'); ?></p>
+                                <p class="description"><?php _e('Select which events should trigger webhooks.', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><?php _e('Trigger Sync Endpoint','wdcs'); ?></th>
+                            <th><?php _e('Trigger Sync Endpoint','erp-sync'); ?></th>
                             <td>
-                                <code><?php echo esc_url( rest_url( 'wdcs/v1/trigger-sync' ) ); ?></code>
-                                <p class="description"><?php _e('External systems can POST to this endpoint to trigger a sync.', 'wdcs'); ?></p>
-                                <p class="description"><?php _e('Include header: <code>X-WDCS-Secret: your_secret</code>', 'wdcs'); ?></p>
+                                <code><?php echo esc_url( rest_url( 'erp-sync/v1/trigger-sync' ) ); ?></code>
+                                <p class="description"><?php _e('External systems can POST to this endpoint to trigger a sync.', 'erp-sync'); ?></p>
+                                <p class="description"><?php _e('Include header: <code>X-ERPSync-Secret: your_secret</code>', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                     </table>
                 </div>
 
                 <!-- Security Tab -->
-                <div id="tab-security" class="wdcs-tab-content" style="display:none;">
-                    <h2><?php _e( 'Security Settings', 'wdcs' ); ?></h2>
-                    <p class="description"><?php _e('Protect your API calls with rate limiting and IP whitelisting.', 'wdcs'); ?></p>
+                <div id="tab-security" class="erp-sync-tab-content" style="display:none;">
+                    <h2><?php _e( 'Security Settings', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Protect your API calls with rate limiting and IP whitelisting.', 'erp-sync'); ?></p>
                     
                     <table class="form-table">
                         <tr>
-                            <th><label for="rate_limit_enabled"><?php _e('Enable Rate Limiting','wdcs'); ?></label></th>
+                            <th><label for="rate_limit_enabled"><?php _e('Enable Rate Limiting','erp-sync'); ?></label></th>
                             <td>
-                                <label><input type="checkbox" id="rate_limit_enabled" name="rate_limit_enabled" value="1" <?php checked( $rate_limit ); ?>> <?php _e('Limit the number of API calls per minute.', 'wdcs'); ?></label>
+                                <label><input type="checkbox" id="rate_limit_enabled" name="rate_limit_enabled" value="1" <?php checked( $rate_limit ); ?>> <?php _e('Limit the number of API calls per minute.', 'erp-sync'); ?></label>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="rate_limit_max"><?php _e('Max Requests per Minute','wdcs'); ?></label></th>
+                            <th><label for="rate_limit_max"><?php _e('Max Requests per Minute','erp-sync'); ?></label></th>
                             <td>
                                 <input type="number" min="10" max="1000" id="rate_limit_max" name="rate_limit_max" value="<?php echo esc_attr( $rate_limit_max ); ?>">
-                                <p class="description"><?php _e('Maximum number of requests allowed per IP address per minute.', 'wdcs'); ?></p>
+                                <p class="description"><?php _e('Maximum number of requests allowed per IP address per minute.', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="ip_whitelist"><?php _e('IP Whitelist','wdcs'); ?></label></th>
+                            <th><label for="ip_whitelist"><?php _e('IP Whitelist','erp-sync'); ?></label></th>
                             <td>
                                 <textarea id="ip_whitelist" name="ip_whitelist" rows="5" class="large-text"><?php echo esc_textarea( $ip_whitelist ); ?></textarea>
-                                <p class="description"><?php _e('One IP address per line. Leave empty to allow all IPs.', 'wdcs'); ?></p>
-                                <p class="description"><?php printf( __('Your current IP: %s', 'wdcs'), '<code>' . esc_html( Security::get_client_ip() ) . '</code>' ); ?></p>
+                                <p class="description"><?php _e('One IP address per line. Leave empty to allow all IPs.', 'erp-sync'); ?></p>
+                                <p class="description"><?php printf( __('Your current IP: %s', 'erp-sync'), '<code>' . esc_html( Security::get_client_ip() ) . '</code>' ); ?></p>
                             </td>
                         </tr>
                         <tr>
-                            <th><?php _e('Credential Encryption','wdcs'); ?></th>
+                            <th><?php _e('Credential Encryption','erp-sync'); ?></th>
                             <td>
-                                <p>✅ <?php _e('Passwords are encrypted using AES-256-CBC before storage.', 'wdcs'); ?></p>
-                                <p class="description"><?php _e('Encryption key is automatically generated and stored securely.', 'wdcs'); ?></p>
+                                <p>✅ <?php _e('Passwords are encrypted using AES-256-CBC before storage.', 'erp-sync'); ?></p>
+                                <p class="description"><?php _e('Encryption key is automatically generated and stored securely.', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                     </table>
                 </div>
 
                 <!-- Diagnostics Tab -->
-                <div id="tab-diagnostics" class="wdcs-tab-content" style="display:none;">
-                    <h2><?php _e( 'Diagnostics & Debug Data', 'wdcs' ); ?></h2>
-                    <p class="description"><?php _e('Enable Debug in Settings tab, run a sync, then download the artifacts here.', 'wdcs'); ?></p>
+                <div id="tab-diagnostics" class="erp-sync-tab-content" style="display:none;">
+                    <h2><?php _e( 'Diagnostics & Debug Data', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Enable Debug in Settings tab, run a sync, then download the artifacts here.', 'erp-sync'); ?></p>
                     
-                    <div class="wdcs-diagnostics-buttons">
+                    <div class="erp-sync-diagnostics-buttons">
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_download_last_request" />
-                            <?php submit_button( __( 'Download Last SOAP Request', 'wdcs' ), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_download_last_request" />
+                            <?php submit_button( __( 'Download Last SOAP Request', 'erp-sync' ), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_download_last_xml" />
-                            <?php submit_button( __( 'Download Last SOAP Response', 'wdcs' ), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_download_last_xml" />
+                            <?php submit_button( __( 'Download Last SOAP Response', 'erp-sync' ), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_download_last_fault" />
-                            <?php submit_button( __( 'Download Last SOAP Fault', 'wdcs' ), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_download_last_fault" />
+                            <?php submit_button( __( 'Download Last SOAP Fault', 'erp-sync' ), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_download_last_headers" />
-                            <?php submit_button( __( 'Download Last SOAP Headers', 'wdcs' ), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_download_last_headers" />
+                            <?php submit_button( __( 'Download Last SOAP Headers', 'erp-sync' ), 'secondary', 'submit', false ); ?>
                         </form>
 
                         <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                            <?php wp_nonce_field( 'wdcs_actions' ); ?>
-                            <input type="hidden" name="action" value="wdcs_download_last_meta" />
-                            <?php submit_button( __( 'Download InfoCards Meta (JSON)', 'wdcs' ), 'secondary', 'submit', false ); ?>
+                            <?php wp_nonce_field( 'erp_sync_actions' ); ?>
+                            <input type="hidden" name="action" value="erp_sync_download_last_meta" />
+                            <?php submit_button( __( 'Download InfoCards Meta (JSON)', 'erp-sync' ), 'secondary', 'submit', false ); ?>
                         </form>
                     </div>
 
                     <?php if ( $debug ) : ?>
                         <?php if ( $last_req_xml ) : ?>
-                            <h3><?php _e('Last SOAP Request (excerpt)','wdcs'); ?></h3>
+                            <h3><?php _e('Last SOAP Request (excerpt)','erp-sync'); ?></h3>
                             <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_req_xml ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_raw_xml ) : ?>
-                            <h3><?php _e('Last SOAP Response (excerpt)','wdcs'); ?></h3>
+                            <h3><?php _e('Last SOAP Response (excerpt)','erp-sync'); ?></h3>
                             <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_raw_xml ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_req_headers ) : ?>
-                            <h3><?php _e('Last SOAP Request Headers (excerpt)','wdcs'); ?></h3>
+                            <h3><?php _e('Last SOAP Request Headers (excerpt)','erp-sync'); ?></h3>
                             <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_req_headers ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_res_headers ) : ?>
-                            <h3><?php _e('Last SOAP Response Headers (excerpt)','wdcs'); ?></h3>
+                            <h3><?php _e('Last SOAP Response Headers (excerpt)','erp-sync'); ?></h3>
                             <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_res_headers ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_meta_json ) : ?>
-                            <h3><?php _e('Last InformationCards Meta','wdcs'); ?></h3>
+                            <h3><?php _e('Last InformationCards Meta','erp-sync'); ?></h3>
                             <textarea readonly rows="6" class="large-text code"><?php echo esc_textarea( $last_meta_json ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_fault ) : ?>
-                            <h3><?php _e('Last SOAP Fault','wdcs'); ?></h3>
+                            <h3><?php _e('Last SOAP Fault','erp-sync'); ?></h3>
                             <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_fault ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_raw_json ) : ?>
-                            <h3><?php _e('Last Raw JSON Excerpt','wdcs'); ?></h3>
+                            <h3><?php _e('Last Raw JSON Excerpt','erp-sync'); ?></h3>
                             <textarea readonly rows="4" class="large-text code"><?php echo esc_textarea( $last_raw_json ); ?></textarea>
                         <?php endif; ?>
 
                         <?php if ( $last_prod_xml ) : ?>
-                            <h3><?php _e('Products Raw XML Excerpt','wdcs'); ?></h3>
+                            <h3><?php _e('Products Raw XML Excerpt','erp-sync'); ?></h3>
                             <textarea readonly rows="8" class="large-text code"><?php echo esc_textarea( $last_prod_xml ); ?></textarea>
                         <?php endif; ?>
                     <?php else : ?>
-                        <p class="wdcs-notice"><?php _e('Enable Debug mode in Settings tab to see detailed information here.', 'wdcs'); ?></p>
+                        <p class="erp-sync-notice"><?php _e('Enable Debug mode in Settings tab to see detailed information here.', 'erp-sync'); ?></p>
                     <?php endif; ?>
                 </div>
 
                 <!-- Save Button (visible on all tabs) -->
                 <p class="submit">
-                    <?php submit_button( __( 'Save All Settings', 'wdcs' ), 'primary', 'submit', false ); ?>
+                    <?php submit_button( __( 'Save All Settings', 'erp-sync' ), 'primary', 'submit', false ); ?>
                 </p>
             </form>
         </div>
         <?php
     }
 
-    public static function add_coupon_columns( $cols ) {
-        $cols['wdcs_status']        = __( 'Status', 'wdcs' );
-        $cols['wdcs_base_discount'] = __( 'Base %', 'wdcs' );
-        $cols['wdcs_is_deleted']    = __( 'Deleted?', 'wdcs' );
-        $cols['wdcs_dob']           = __( 'DOB', 'wdcs' );
+    public static function add_coupon_columns( array $cols ): array {
+        $cols['erp_sync_status']        = __( 'Status', 'erp-sync' );
+        $cols['erp_sync_base_discount'] = __( 'Base %', 'erp-sync' );
+        $cols['erp_sync_is_deleted']    = __( 'Deleted?', 'erp-sync' );
+        $cols['erp_sync_dob']           = __( 'DOB', 'erp-sync' );
         return $cols;
     }
 
-        public static function render_coupon_columns( $column, $post_id ) {
-        if ( ! get_post_meta( $post_id, '_wdcs_managed', true ) ) return;
+    public static function render_coupon_columns( string $column, int $post_id ): void {
+        if ( ! get_post_meta( $post_id, '_erp_sync_managed', true ) ) return;
         
         switch ( $column ) {
-            case 'wdcs_status':
-                $is_deleted = get_post_meta( $post_id, '_wdcs_is_deleted', true ) === 'yes';
-                $dob = get_post_meta( $post_id, '_wdcs_dob', true );
+            case 'erp_sync_status':
+                $is_deleted = get_post_meta( $post_id, '_erp_sync_is_deleted', true ) === 'yes';
+                $dob = (string) get_post_meta( $post_id, '_erp_sync_dob', true );
                 $is_birthday = self::is_in_birthday_window( $dob );
                 
                 if ( $is_deleted ) {
-                    echo '<span class="wdcs-status-badge wdcs-status-deleted">🚫 ' . esc_html__( 'Deleted', 'wdcs' ) . '</span>';
+                    echo '<span class="erp-sync-status-badge erp-sync-status-deleted">🚫 ' . esc_html__( 'Deleted', 'erp-sync' ) . '</span>';
                 } elseif ( $is_birthday ) {
-                    echo '<span class="wdcs-status-badge wdcs-status-birthday">🎂 ' . esc_html__( 'Birthday', 'wdcs' ) . '</span>';
+                    echo '<span class="erp-sync-status-badge erp-sync-status-birthday">🎂 ' . esc_html__( 'Birthday', 'erp-sync' ) . '</span>';
                 } else {
-                    echo '<span class="wdcs-status-badge wdcs-status-active">✅ ' . esc_html__( 'Active', 'wdcs' ) . '</span>';
+                    echo '<span class="erp-sync-status-badge erp-sync-status-active">✅ ' . esc_html__( 'Active', 'erp-sync' ) . '</span>';
                 }
                 break;
                 
-            case 'wdcs_base_discount':
-                $value = get_post_meta( $post_id, '_wdcs_base_discount', true );
-                echo '<span class="wdcs-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="base_discount">';
+            case 'erp_sync_base_discount':
+                $value = get_post_meta( $post_id, '_erp_sync_base_discount', true );
+                echo '<span class="erp-sync-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="base_discount">';
                 echo esc_html( $value ) . '%';
                 echo '</span>';
                 break;
                 
-            case 'wdcs_is_deleted':
-                $value = get_post_meta( $post_id, '_wdcs_is_deleted', true );
-                $display = $value === 'yes' ? __('Yes', 'wdcs') : __('No', 'wdcs');
-                echo '<span class="wdcs-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="is_deleted">';
+            case 'erp_sync_is_deleted':
+                $value = get_post_meta( $post_id, '_erp_sync_is_deleted', true );
+                $display = $value === 'yes' ? __('Yes', 'erp-sync') : __('No', 'erp-sync');
+                echo '<span class="erp-sync-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="is_deleted">';
                 echo esc_html( $display );
                 echo '</span>';
                 break;
                 
-            case 'wdcs_dob':
-                echo esc_html( get_post_meta( $post_id, '_wdcs_dob', true ) );
+            case 'erp_sync_dob':
+                echo esc_html( get_post_meta( $post_id, '_erp_sync_dob', true ) );
                 break;
         }
     }
 
-    public static function sortable_columns( $columns ) {
-        $columns['wdcs_base_discount'] = 'wdcs_base_discount';
-        $columns['wdcs_dob'] = 'wdcs_dob';
+    public static function sortable_columns( array $columns ): array {
+        $columns['erp_sync_base_discount'] = 'erp_sync_base_discount';
+        $columns['erp_sync_dob'] = 'erp_sync_dob';
         return $columns;
     }
 
-    private static function is_in_birthday_window( $dob ) {
+    private static function is_in_birthday_window( string $dob ): bool {
         if ( empty( $dob ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $dob ) ) {
             return false;
         }
@@ -943,7 +945,7 @@ class Admin {
         }
     }
 
-    private static function is_leap_year( $y ) {
+    private static function is_leap_year( int $y ): bool {
         return ( ( $y % 4 === 0 ) && ( $y % 100 !== 0 ) ) || ( $y % 400 === 0 );
     }
 }

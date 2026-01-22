@@ -1,34 +1,36 @@
 <?php
-namespace WDCS;
+declare(strict_types=1);
+
+namespace ERPSync;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Security {
 
-    const OPTION_IP_WHITELIST    = 'wdcs_ip_whitelist';
-    const OPTION_RATE_LIMIT      = 'wdcs_rate_limit_enabled';
-    const OPTION_RATE_LIMIT_MAX  = 'wdcs_rate_limit_max';
-    const OPTION_ENCRYPTION_KEY  = 'wdcs_encryption_key';
-    const TRANSIENT_PREFIX       = 'wdcs_rate_limit_';
+    const OPTION_IP_WHITELIST    = 'erp_sync_ip_whitelist';
+    const OPTION_RATE_LIMIT      = 'erp_sync_rate_limit_enabled';
+    const OPTION_RATE_LIMIT_MAX  = 'erp_sync_rate_limit_max';
+    const OPTION_ENCRYPTION_KEY  = 'erp_sync_encryption_key';
+    const TRANSIENT_PREFIX       = 'erp_sync_rate_limit_';
 
-    public static function init() {
+    public static function init(): void {
         // Ensure encryption key exists
         self::ensure_encryption_key();
         
         // Hook into API calls for rate limiting and IP whitelisting
-        add_action( 'wdcs_before_api_call', [ __CLASS__, 'check_rate_limit' ] );
-        add_action( 'wdcs_before_api_call', [ __CLASS__, 'check_ip_whitelist' ] );
+        add_action( 'erp_sync_before_api_call', [ __CLASS__, 'check_rate_limit' ] );
+        add_action( 'erp_sync_before_api_call', [ __CLASS__, 'check_ip_whitelist' ] );
         
         // Schedule cleanup of old logs
-        if ( ! wp_next_scheduled( 'wdcs_cleanup_logs' ) ) {
-            wp_schedule_event( time(), 'daily', 'wdcs_cleanup_logs' );
+        if ( ! wp_next_scheduled( 'erp_sync_cleanup_logs' ) ) {
+            wp_schedule_event( time(), 'daily', 'erp_sync_cleanup_logs' );
         }
-        add_action( 'wdcs_cleanup_logs', [ __CLASS__, 'cleanup_old_logs' ] );
+        add_action( 'erp_sync_cleanup_logs', [ __CLASS__, 'cleanup_old_logs' ] );
     }
 
-    public static function create_tables() {
+    public static function create_tables(): void {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'wdcs_api_logs';
+        $table_name = $wpdb->prefix . 'erp_sync_api_logs';
         $charset_collate = $wpdb->get_charset_collate();
 
         $sql = "CREATE TABLE IF NOT EXISTS $table_name (
@@ -49,7 +51,7 @@ class Security {
     /**
      * Ensure encryption key exists
      */
-    public static function ensure_encryption_key() {
+    public static function ensure_encryption_key(): void {
         if ( ! get_option( self::OPTION_ENCRYPTION_KEY ) ) {
             $key = base64_encode( openssl_random_pseudo_bytes( 32 ) );
             update_option( self::OPTION_ENCRYPTION_KEY, $key );
@@ -61,16 +63,13 @@ class Security {
      * Encrypt sensitive data using AES-256-CBC
      * Handles single characters and numbers correctly
      */
-    public static function encrypt( $data ) {
-        if ( $data === '' || $data === null ) {
+    public static function encrypt( string $data ): string {
+        if ( $data === '' ) {
             return '';
         }
         
-        // Convert to string to handle single characters and numbers like "1"
-        $data = (string) $data;
-        
         try {
-            $key = base64_decode( get_option( self::OPTION_ENCRYPTION_KEY ) );
+            $key = base64_decode( (string) get_option( self::OPTION_ENCRYPTION_KEY ) );
             
             if ( empty( $key ) || strlen( $key ) < 32 ) {
                 Logger::instance()->log( 'Encryption key invalid', [] );
@@ -86,7 +85,7 @@ class Security {
             }
             
             // Add a marker to identify encrypted data and make backward compatibility easier
-            return 'WDCS_ENC::' . base64_encode( $encrypted . '::' . base64_encode( $iv ) );
+            return 'ERPSYNC_ENC::' . base64_encode( $encrypted . '::' . base64_encode( $iv ) );
             
         } catch ( \Throwable $e ) {
             Logger::instance()->log( 'Encryption exception', [ 'error' => $e->getMessage() ] );
@@ -98,22 +97,34 @@ class Security {
      * Decrypt sensitive data
      * Falls back to plain text for backward compatibility
      */
-    public static function decrypt( $data ) {
-        if ( $data === '' || $data === null ) {
+    public static function decrypt( string $data ): string {
+        if ( $data === '' ) {
             return '';
         }
         
-        // Check if it's encrypted by our system
-        if ( strpos( $data, 'WDCS_ENC::' ) !== 0 ) {
-            // Not encrypted with our marker, return as-is (backward compatibility with plain text)
-            return $data;
+        // Check if it's encrypted by our system (new format)
+        if ( strpos( $data, 'ERPSYNC_ENC::' ) === 0 ) {
+            return self::decrypt_new_format( $data );
         }
         
+        // Check for old WDCS format for backward compatibility
+        if ( strpos( $data, 'WDCS_ENC::' ) === 0 ) {
+            return self::decrypt_old_format( $data );
+        }
+        
+        // Not encrypted with our marker, return as-is (backward compatibility with plain text)
+        return $data;
+    }
+
+    /**
+     * Decrypt data encrypted with new ERPSYNC format
+     */
+    private static function decrypt_new_format( string $data ): string {
         try {
             // Remove marker prefix
-            $encrypted_payload = substr( $data, 10 ); // Remove "WDCS_ENC::"
+            $encrypted_payload = substr( $data, 13 ); // Remove "ERPSYNC_ENC::"
             
-            $key = base64_decode( get_option( self::OPTION_ENCRYPTION_KEY ) );
+            $key = base64_decode( (string) get_option( self::OPTION_ENCRYPTION_KEY ) );
             
             if ( empty( $key ) || strlen( $key ) < 32 ) {
                 Logger::instance()->log( 'Decryption key invalid', [] );
@@ -152,9 +163,55 @@ class Security {
     }
 
     /**
+     * Decrypt data encrypted with old WDCS format (backward compatibility)
+     */
+    private static function decrypt_old_format( string $data ): string {
+        try {
+            // Remove marker prefix
+            $encrypted_payload = substr( $data, 10 ); // Remove "WDCS_ENC::"
+            
+            $key = base64_decode( (string) get_option( self::OPTION_ENCRYPTION_KEY ) );
+            
+            if ( empty( $key ) || strlen( $key ) < 32 ) {
+                Logger::instance()->log( 'Decryption key invalid (old format)', [] );
+                return '';
+            }
+            
+            $decoded = base64_decode( $encrypted_payload );
+            $parts = explode( '::', $decoded, 2 );
+            
+            if ( count( $parts ) !== 2 ) {
+                Logger::instance()->log( 'Decryption format invalid (old format)', [] );
+                return '';
+            }
+            
+            list( $encrypted_data, $iv_encoded ) = $parts;
+            $iv = base64_decode( $iv_encoded );
+            
+            if ( empty( $iv ) ) {
+                Logger::instance()->log( 'Decryption IV invalid (old format)', [] );
+                return '';
+            }
+            
+            $decrypted = openssl_decrypt( $encrypted_data, 'aes-256-cbc', $key, 0, $iv );
+            
+            if ( $decrypted === false ) {
+                Logger::instance()->log( 'Decryption failed (old format)', [] );
+                return '';
+            }
+            
+            return $decrypted;
+            
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Decryption exception (old format)', [ 'error' => $e->getMessage() ] );
+            return '';
+        }
+    }
+
+    /**
      * Check rate limiting
      */
-    public static function check_rate_limit() {
+    public static function check_rate_limit(): void {
         if ( ! get_option( self::OPTION_RATE_LIMIT, false ) ) {
             return;
         }
@@ -176,8 +233,8 @@ class Security {
                 ] );
                 
                 wp_die( 
-                    esc_html__( 'Rate limit exceeded. Please try again later.', 'wdcs' ),
-                    esc_html__( 'Too Many Requests', 'wdcs' ),
+                    esc_html__( 'Rate limit exceeded. Please try again later.', 'erp-sync' ),
+                    esc_html__( 'Too Many Requests', 'erp-sync' ),
                     [ 'response' => 429 ]
                 );
             }
@@ -190,7 +247,7 @@ class Security {
     /**
      * Check IP whitelist
      */
-    public static function check_ip_whitelist() {
+    public static function check_ip_whitelist(): void {
         $whitelist = get_option( self::OPTION_IP_WHITELIST, '' );
         
         if ( empty( $whitelist ) ) {
@@ -214,10 +271,10 @@ class Security {
             
             wp_die( 
                 sprintf( 
-                    esc_html__( 'Access denied. Your IP address (%s) is not whitelisted.', 'wdcs' ),
+                    esc_html__( 'Access denied. Your IP address (%s) is not whitelisted.', 'erp-sync' ),
                     esc_html( $ip )
                 ),
-                esc_html__( 'Forbidden', 'wdcs' ),
+                esc_html__( 'Forbidden', 'erp-sync' ),
                 [ 'response' => 403 ]
             );
         }
@@ -227,7 +284,7 @@ class Security {
      * Get client IP address
      * Supports various proxy configurations
      */
-    public static function get_client_ip() {
+    public static function get_client_ip(): string {
         $ip = '';
         
         // Check for proxy headers first
@@ -255,9 +312,9 @@ class Security {
     /**
      * Log API call to database
      */
-    private static function log_api_call( $ip, $endpoint ) {
+    private static function log_api_call( string $ip, string $endpoint ): void {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'wdcs_api_logs';
+        $table_name = $wpdb->prefix . 'erp_sync_api_logs';
         
         // Check if table exists first
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
@@ -280,9 +337,9 @@ class Security {
     /**
      * Clean old logs (keep last 30 days)
      */
-    public static function cleanup_old_logs() {
+    public static function cleanup_old_logs(): void {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'wdcs_api_logs';
+        $table_name = $wpdb->prefix . 'erp_sync_api_logs';
         
         // Check if table exists
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
@@ -304,9 +361,9 @@ class Security {
     /**
      * Get API call statistics
      */
-    public static function get_stats( $days = 7 ) {
+    public static function get_stats( int $days = 7 ): array {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'wdcs_api_logs';
+        $table_name = $wpdb->prefix . 'erp_sync_api_logs';
         
         // Check if table exists
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
@@ -333,9 +390,9 @@ class Security {
     /**
      * Get top IP addresses by call count
      */
-    public static function get_top_ips( $limit = 10, $days = 7 ) {
+    public static function get_top_ips( int $limit = 10, int $days = 7 ): array {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'wdcs_api_logs';
+        $table_name = $wpdb->prefix . 'erp_sync_api_logs';
         
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '$table_name'" ) === $table_name;
         

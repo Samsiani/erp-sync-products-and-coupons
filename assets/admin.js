@@ -1,5 +1,5 @@
 /**
- * WDCS Admin JavaScript - Version 1.2.0
+ * ERP Sync Admin JavaScript - Version 1.2.0
  */
 
 (function($) {
@@ -7,27 +7,27 @@
 
     // Tab Navigation
     function initTabs() {
-        $('.wdcs-nav-tabs .nav-tab').on('click', function(e) {
+        $('.erp-sync-nav-tabs .nav-tab').on('click', function(e) {
             e.preventDefault();
             
             const target = $(this).attr('href');
             
             // Update active tab
-            $('.wdcs-nav-tabs .nav-tab').removeClass('nav-tab-active');
+            $('.erp-sync-nav-tabs .nav-tab').removeClass('nav-tab-active');
             $(this).addClass('nav-tab-active');
             
             // Show target content
-            $('.wdcs-tab-content').hide();
+            $('.erp-sync-tab-content').hide();
             $(target).show();
             
             // Save active tab to localStorage
-            localStorage.setItem('wdcs_active_tab', target);
+            localStorage.setItem('erp_sync_active_tab', target);
         });
         
         // Restore last active tab
-        const lastTab = localStorage.getItem('wdcs_active_tab');
+        const lastTab = localStorage.getItem('erp_sync_active_tab');
         if (lastTab && $(lastTab).length) {
-            $('.wdcs-nav-tabs .nav-tab[href="' + lastTab + '"]').trigger('click');
+            $('.erp-sync-nav-tabs .nav-tab[href="' + lastTab + '"]').trigger('click');
         }
     }
 
@@ -37,22 +37,22 @@
         
         function checkProgress() {
             $.ajax({
-                url: wdcsAdmin.ajaxurl,
+                url: erpSyncAdmin.ajaxurl,
                 type: 'POST',
                 data: {
-                    action: 'wdcs_sync_progress',
-                    nonce: wdcsAdmin.nonce
+                    action: 'erp_sync_sync_progress',
+                    nonce: erpSyncAdmin.nonce
                 },
                 success: function(response) {
                     if (response.success && response.data) {
                         const data = response.data;
                         
                         if (data.status !== 'idle' && data.progress > 0) {
-                            $('#wdcs-progress-container').show();
-                            $('.wdcs-progress-fill').css('width', data.progress + '%');
-                            $('.wdcs-progress-text').text(data.status + ' (' + data.progress + '%)');
+                            $('#erp-sync-progress-container').show();
+                            $('.erp-sync-progress-fill').css('width', data.progress + '%');
+                            $('.erp-sync-progress-text').text(data.status + ' (' + data.progress + '%)');
                         } else {
-                            $('#wdcs-progress-container').fadeOut();
+                            $('#erp-sync-progress-container').fadeOut();
                             if (progressInterval) {
                                 clearInterval(progressInterval);
                                 progressInterval = null;
@@ -64,10 +64,10 @@
         }
         
         // Start polling when sync buttons are clicked
-        $('.wdcs-action-buttons form').on('submit', function() {
-            $('#wdcs-progress-container').show();
-            $('.wdcs-progress-fill').css('width', '0%');
-            $('.wdcs-progress-text').text('Initializing...');
+        $('.erp-sync-action-buttons form').on('submit', function() {
+            $('#erp-sync-progress-container').show();
+            $('.erp-sync-progress-fill').css('width', '0%');
+            $('.erp-sync-progress-text').text('Initializing...');
             
             if (!progressInterval) {
                 progressInterval = setInterval(checkProgress, 1000);
@@ -79,7 +79,7 @@
     function initQuickEdit() {
         let originalValue = '';
         
-        $(document).on('click', '.wdcs-editable', function() {
+        $(document).on('click', '.erp-sync-editable', function() {
             const $this = $(this);
             
             if ($this.hasClass('editing')) {
@@ -101,7 +101,7 @@
                 return;
             }
             
-            input.addClass('wdcs-quick-edit-input');
+            input.addClass('erp-sync-quick-edit-input');
             
             $this.addClass('editing').html(input);
             input.focus();
@@ -117,11 +117,11 @@
                 
                 // Save via AJAX
                 $.ajax({
-                    url: wdcsAdmin.ajaxurl,
+                    url: erpSyncAdmin.ajaxurl,
                     type: 'POST',
                     data: {
-                        action: 'wdcs_quick_edit_coupon',
-                        nonce: wdcsAdmin.nonce,
+                        action: 'erp_sync_quick_edit_coupon',
+                        nonce: erpSyncAdmin.nonce,
                         coupon_id: couponId,
                         field: field,
                         value: newValue
@@ -183,7 +183,7 @@
         initQuickEdit();
         initConfirmations();
         
-        console.log('WDCS Admin JS v1.2.0 loaded');
+        console.log('ERP Sync Admin JS v1.2.0 loaded');
     });
 
 })(jQuery);
