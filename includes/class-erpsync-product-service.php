@@ -369,10 +369,11 @@ class Product_Service {
      * Creates new products or updates existing ones based on VendorCode (SKU).
      * Uses Source of Truth strategy: API data overwrites existing data.
      *
-     * @param array $rows Array of product catalog rows from IBS API.
+     * @param array  $rows       Array of product catalog rows from IBS API.
+     * @param string $session_id Optional unique session identifier for tracking sync.
      * @return array{created: int, updated: int, errors: int, total: int} Sync statistics.
      */
-    public function sync_catalog_batch( array $rows ): array {
+    public function sync_catalog_batch( array $rows, string $session_id = '' ): array {
         $stats = [
             'created' => 0,
             'updated' => 0,
@@ -418,7 +419,7 @@ class Product_Service {
                 }
 
                 // Set product data
-                $this->set_product_catalog_data( $product, $row, $attribute_mapping );
+                $this->set_product_catalog_data( $product, $row, $attribute_mapping, $session_id );
 
                 // Save product
                 $saved_id = $product->save();
@@ -452,10 +453,11 @@ class Product_Service {
 
         // Log summary
         Logger::instance()->log( 'Catalog batch sync completed', [
-            'created' => $stats['created'],
-            'updated' => $stats['updated'],
-            'errors'  => $stats['errors'],
-            'total'   => $stats['total'],
+            'created'    => $stats['created'],
+            'updated'    => $stats['updated'],
+            'errors'     => $stats['errors'],
+            'total'      => $stats['total'],
+            'session_id' => $session_id,
         ] );
 
         return $stats;
@@ -467,8 +469,9 @@ class Product_Service {
      * @param \WC_Product $product           Product object.
      * @param array       $row               Product data row from IBS API.
      * @param array       $attribute_mapping Attribute mapping configuration.
+     * @param string      $session_id        Optional unique session identifier for tracking sync.
      */
-    private function set_product_catalog_data( \WC_Product $product, array $row, array $attribute_mapping ): void {
+    private function set_product_catalog_data( \WC_Product $product, array $row, array $attribute_mapping, string $session_id = '' ): void {
         // Set basic product data
         $product->set_name( sanitize_text_field( $row['ProductName'] ?? '' ) );
         $product->set_sku( sanitize_text_field( $row['VendorCode'] ?? '' ) );
@@ -477,6 +480,11 @@ class Product_Service {
         // Mark as ERP-managed product
         $product->update_meta_data( '_erp_sync_managed', 1 );
         $product->update_meta_data( '_erp_sync_synced_at', current_time( 'mysql' ) );
+
+        // Update session ID if provided (marks product as "touched" in this sync session)
+        if ( ! empty( $session_id ) ) {
+            $product->update_meta_data( '_erp_sync_session_id', $session_id );
+        }
 
         // Process and set attributes
         $attributes = $this->build_product_attributes( $row, $attribute_mapping );
@@ -562,10 +570,11 @@ class Product_Service {
      * Optimized for frequent execution - only updates stock-related fields.
      * Also discovers and records unique branch/warehouse locations.
      *
-     * @param array $rows Array of stock rows from IBS API.
+     * @param array  $rows       Array of stock rows from IBS API.
+     * @param string $session_id Optional unique session identifier for tracking sync.
      * @return array{updated: int, skipped: int, errors: int, total: int} Sync statistics.
      */
-    public function sync_stock_batch( array $rows ): array {
+    public function sync_stock_batch( array $rows, string $session_id = '' ): array {
         $stats = [
             'updated' => 0,
             'skipped' => 0,
@@ -617,7 +626,7 @@ class Product_Service {
                 }
 
                 // Update stock and price data only
-                $this->set_product_stock_data( $product, $row );
+                $this->set_product_stock_data( $product, $row, $session_id );
 
                 // Save product
                 $product->save();
@@ -644,6 +653,7 @@ class Product_Service {
             'errors'             => $stats['errors'],
             'total'              => $stats['total'],
             'branches_discovered'=> count( $discovered_locations ),
+            'session_id'         => $session_id,
         ] );
 
         return $stats;
@@ -684,10 +694,11 @@ class Product_Service {
      * Assigns branch taxonomy terms efficiently by comparing target vs current.
      * Logs changes to the audit log when values differ.
      *
-     * @param \WC_Product $product Product object.
-     * @param array       $row     Stock data row from IBS API.
+     * @param \WC_Product $product    Product object.
+     * @param array       $row        Stock data row from IBS API.
+     * @param string      $session_id Optional unique session identifier for tracking sync.
      */
-    private function set_product_stock_data( \WC_Product $product, array $row ): void {
+    private function set_product_stock_data( \WC_Product $product, array $row, string $session_id = '' ): void {
         // ========== CAPTURE OLD VALUES FOR COMPARISON ==========
         $old_regular_price = $product->get_regular_price();
         $old_sale_price    = $product->get_sale_price();
@@ -745,6 +756,11 @@ class Product_Service {
 
         // Update sync timestamp
         $product->update_meta_data( '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
+
+        // Update session ID if provided (marks product as "touched" in this sync session)
+        if ( ! empty( $session_id ) ) {
+            $product->update_meta_data( '_erp_sync_session_id', $session_id );
+        }
 
         // Assign branch taxonomy terms (performance-optimized)
         $this->assign_branch_terms( $product, $warehouses );
@@ -1025,5 +1041,119 @@ class Product_Service {
         $this->attribute_taxonomy_cache = [];
         $this->term_cache = [];
         $this->attribute_mapping_cache = null;
+    }
+
+    /**
+     * Zero out stock for orphaned products.
+     *
+     * Identifies products that were NOT present in the sync data (i.e., their
+     * session_id doesn't match the current sync session) and sets their stock to 0.
+     *
+     * Safety: Only affects products managed by ERP Sync (_erp_sync_managed = 1).
+     *
+     * @param string $session_id The current sync session ID.
+     * @return int Number of orphaned products updated.
+     */
+    public function zero_out_orphans( string $session_id ): int {
+        global $wpdb;
+
+        if ( empty( $session_id ) ) {
+            Logger::instance()->log( 'Orphan cleanup skipped: No session ID provided', [] );
+            return 0;
+        }
+
+        Logger::instance()->log( 'Starting orphan cleanup', [
+            'session_id' => $session_id,
+        ] );
+
+        // Query: Find all products where:
+        // - Post type = product
+        // - _erp_sync_managed = 1 (Only touch our products)
+        // - _erp_sync_session_id != $session_id OR does not exist
+        //
+        // We use a direct SQL query for performance with large datasets
+        $orphan_ids = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT DISTINCT p.ID
+                FROM {$wpdb->posts} p
+                INNER JOIN {$wpdb->postmeta} pm_managed 
+                    ON p.ID = pm_managed.post_id 
+                    AND pm_managed.meta_key = '_erp_sync_managed' 
+                    AND pm_managed.meta_value = '1'
+                LEFT JOIN {$wpdb->postmeta} pm_session 
+                    ON p.ID = pm_session.post_id 
+                    AND pm_session.meta_key = '_erp_sync_session_id'
+                WHERE p.post_type = 'product'
+                    AND p.post_status IN ('publish', 'draft', 'pending', 'private')
+                    AND (pm_session.meta_value IS NULL OR pm_session.meta_value != %s)",
+                $session_id
+            )
+        );
+
+        if ( empty( $orphan_ids ) ) {
+            Logger::instance()->log( 'Orphan cleanup: No orphans found', [
+                'session_id' => $session_id,
+            ] );
+            return 0;
+        }
+
+        $orphan_count = 0;
+
+        foreach ( $orphan_ids as $product_id ) {
+            $product = wc_get_product( (int) $product_id );
+
+            if ( ! $product ) {
+                continue;
+            }
+
+            // Get current stock for logging
+            $old_stock = $product->get_stock_quantity();
+
+            // Skip if stock is already 0
+            if ( $old_stock === 0 || $old_stock === null ) {
+                continue;
+            }
+
+            // Set stock to 0
+            $product->set_manage_stock( true );
+            $product->set_stock_quantity( 0 );
+            $product->set_stock_status( 'outofstock' );
+            $product->update_meta_data( '_erp_sync_orphan_zeroed_at', current_time( 'mysql' ) );
+            $product->update_meta_data( '_erp_sync_orphan_session_id', $session_id );
+            $product->save();
+
+            $orphan_count++;
+
+            // Log the action
+            $message = sprintf(
+                'Set stock to 0 due to absence in ERP sync (session: %s). Previous stock: %d',
+                $session_id,
+                $old_stock
+            );
+
+            Audit_Logger::log_change(
+                $product,
+                'orphan_cleanup',
+                $old_stock,
+                0,
+                $message
+            );
+
+            Logger::instance()->log( 'Orphan product stock zeroed', [
+                'product_id'  => $product_id,
+                'sku'         => $product->get_sku(),
+                'old_stock'   => $old_stock,
+                'session_id'  => $session_id,
+            ] );
+        }
+
+        Logger::instance()->log( 'Orphan cleanup completed', [
+            'session_id'          => $session_id,
+            'orphans_found'       => count( $orphan_ids ),
+            'orphans_zeroed'      => $orphan_count,
+            'orphans_already_zero'=> count( $orphan_ids ) - $orphan_count,
+        ] );
+
+        return $orphan_count;
     }
 }

@@ -11,8 +11,95 @@ class Sync_Service {
     const OPTION_LAST_PRODUCTS_SYNC = 'erp_sync_last_products_sync';
     const OPTION_LAST_STOCK_SYNC = 'erp_sync_last_stock_sync';
 
+    /**
+     * Action Scheduler hook for processing stock batch.
+     */
+    const HOOK_PROCESS_STOCK_BATCH = 'erp_sync_process_stock_batch';
+
+    /**
+     * Action Scheduler hook for processing catalog batch.
+     */
+    const HOOK_PROCESS_CATALOG_BATCH = 'erp_sync_process_catalog_batch';
+
+    /**
+     * Action Scheduler hook for cleaning up orphaned products.
+     */
+    const HOOK_CLEANUP_ORPHANS = 'erp_sync_cleanup_orphans';
+
+    /**
+     * Option key for storing the current active sync session ID.
+     */
+    const OPTION_ACTIVE_SESSION = 'erp_sync_active_session';
+
+    /**
+     * Batch size for processing items with Action Scheduler.
+     */
+    const BATCH_SIZE = 50;
+
+    /**
+     * Delay in seconds before running orphan cleanup (30 minutes).
+     */
+    const ORPHAN_CLEANUP_DELAY = 1800;
+
+    /**
+     * Whether hooks have been registered.
+     *
+     * @var bool
+     */
+    private static bool $hooks_registered = false;
+
     private API_Client $api;
     private Product_Service $product_service;
+
+    /**
+     * Initialize Action Scheduler hooks.
+     *
+     * This should be called once during plugin bootstrap to register
+     * the hooks that Action Scheduler will fire.
+     */
+    public static function init(): void {
+        if ( self::$hooks_registered ) {
+            return;
+        }
+
+        add_action( self::HOOK_PROCESS_STOCK_BATCH, [ __CLASS__, 'handle_stock_batch' ], 10, 2 );
+        add_action( self::HOOK_PROCESS_CATALOG_BATCH, [ __CLASS__, 'handle_catalog_batch' ], 10, 2 );
+        add_action( self::HOOK_CLEANUP_ORPHANS, [ __CLASS__, 'handle_cleanup_orphans' ], 10, 1 );
+
+        self::$hooks_registered = true;
+    }
+
+    /**
+     * Static handler for stock batch processing (called by Action Scheduler).
+     *
+     * @param array  $batch      Array of stock rows to process.
+     * @param string $session_id Unique session identifier for this sync.
+     */
+    public static function handle_stock_batch( array $batch, string $session_id ): void {
+        $service = new self( new API_Client() );
+        $service->process_stock_batch( $batch, $session_id );
+    }
+
+    /**
+     * Static handler for catalog batch processing (called by Action Scheduler).
+     *
+     * @param array  $batch      Array of catalog rows to process.
+     * @param string $session_id Unique session identifier for this sync.
+     */
+    public static function handle_catalog_batch( array $batch, string $session_id ): void {
+        $service = new self( new API_Client() );
+        $service->process_catalog_batch( $batch, $session_id );
+    }
+
+    /**
+     * Static handler for orphan cleanup (called by Action Scheduler).
+     *
+     * @param string $session_id Unique session identifier for the sync that completed.
+     */
+    public static function handle_cleanup_orphans( string $session_id ): void {
+        $service = new self( new API_Client() );
+        $service->cleanup_orphans( $session_id );
+    }
 
     public function __construct( API_Client $api, ?Product_Service $product_service = null ) {
         $this->api = $api;
@@ -179,49 +266,85 @@ class Sync_Service {
     /**
      * Import products catalog from IBS/1C API.
      *
-     * Fetches product catalog data and synchronizes with WooCommerce products.
+     * Fetches product catalog data and schedules batch processing via Action Scheduler.
      * Creates new products or updates existing ones based on VendorCode (SKU).
      *
-     * @return array{created: int, updated: int, errors: int, total: int} Sync statistics.
+     * @return array{scheduled: int, total: int, session_id: string} Schedule statistics.
      * @throws \Throwable If API call fails.
      */
     public function import_products_catalog(): array {
-        Logger::instance()->log( 'Starting products catalog import', [
+        Logger::instance()->log( 'Starting products catalog import (batch mode)', [
             'user' => wp_get_current_user()->user_login ?? 'system',
         ] );
 
-        $start_time = microtime( true );
-
         try {
+            // Generate unique session ID for this sync
+            $session_id = uniqid( 'catalog_', true );
+
+            // Store session ID for tracking
+            update_option( self::OPTION_ACTIVE_SESSION, [
+                'session_id' => $session_id,
+                'type'       => 'catalog',
+                'started_at' => current_time( 'mysql' ),
+            ] );
+
             // Fetch catalog data from API
             $rows = $this->api->fetch_products_catalog();
             $total = count( $rows );
 
-            $this->set_progress( 0, $total, 'Processing products catalog...' );
+            $this->set_progress( 0, $total, 'Scheduling catalog batches...' );
 
-            // Sync catalog batch
-            $stats = $this->product_service->sync_catalog_batch( $rows );
+            // Split data into chunks of BATCH_SIZE items
+            $chunks = array_chunk( $rows, self::BATCH_SIZE );
+            $scheduled_batches = 0;
+
+            // Schedule each chunk as a background action
+            foreach ( $chunks as $index => $chunk ) {
+                if ( function_exists( 'as_schedule_single_action' ) ) {
+                    as_schedule_single_action(
+                        time() + ( $index * 5 ), // Stagger batches by 5 seconds
+                        self::HOOK_PROCESS_CATALOG_BATCH,
+                        [ $chunk, $session_id ],
+                        'erp-sync'
+                    );
+                    $scheduled_batches++;
+                } else {
+                    // Fallback: process synchronously if Action Scheduler not available
+                    $this->product_service->sync_catalog_batch( $chunk, $session_id );
+                }
+
+                $this->set_progress( $index + 1, count( $chunks ), sprintf( 'Scheduled batch %d of %d', $index + 1, count( $chunks ) ) );
+            }
+
+            // Schedule orphan cleanup after delay
+            if ( function_exists( 'as_schedule_single_action' ) ) {
+                as_schedule_single_action(
+                    time() + self::ORPHAN_CLEANUP_DELAY,
+                    self::HOOK_CLEANUP_ORPHANS,
+                    [ $session_id ],
+                    'erp-sync'
+                );
+            }
 
             // Update last sync time
             update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
 
-            $duration_ms = (int) round( ( microtime( true ) - $start_time ) * 1000 );
-
-            Logger::instance()->log( 'Products catalog import completed', [
-                'created'     => $stats['created'],
-                'updated'     => $stats['updated'],
-                'errors'      => $stats['errors'],
-                'total'       => $stats['total'],
-                'duration_ms' => $duration_ms,
-                'user'        => wp_get_current_user()->user_login ?? 'system',
+            Logger::instance()->log( 'Products catalog import batches scheduled', [
+                'session_id'        => $session_id,
+                'total_items'       => $total,
+                'batch_size'        => self::BATCH_SIZE,
+                'scheduled_batches' => $scheduled_batches,
+                'cleanup_delay'     => self::ORPHAN_CLEANUP_DELAY,
+                'user'              => wp_get_current_user()->user_login ?? 'system',
             ] );
 
             $this->clear_progress();
 
-            // Clear product service cache to free memory
-            $this->product_service->clear_cache();
-
-            return $stats;
+            return [
+                'scheduled'  => $scheduled_batches,
+                'total'      => $total,
+                'session_id' => $session_id,
+            ];
 
         } catch ( \Throwable $e ) {
             $this->clear_progress();
@@ -234,50 +357,123 @@ class Sync_Service {
     }
 
     /**
+     * Process a single catalog batch (called by Action Scheduler).
+     *
+     * @param array  $batch      Array of product rows to process.
+     * @param string $session_id Unique session identifier for this sync.
+     */
+    public function process_catalog_batch( array $batch, string $session_id ): void {
+        Logger::instance()->log( 'Processing catalog batch', [
+            'session_id' => $session_id,
+            'batch_size' => count( $batch ),
+        ] );
+
+        try {
+            $stats = $this->product_service->sync_catalog_batch( $batch, $session_id );
+
+            Logger::instance()->log( 'Catalog batch processed', [
+                'session_id' => $session_id,
+                'created'    => $stats['created'],
+                'updated'    => $stats['updated'],
+                'errors'     => $stats['errors'],
+                'total'      => $stats['total'],
+            ] );
+
+            // Clear cache after batch to free memory
+            $this->product_service->clear_cache();
+
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Catalog batch processing failed', [
+                'session_id' => $session_id,
+                'error'      => $e->getMessage(),
+            ] );
+        }
+    }
+
+    /**
      * Update products stock and prices from IBS/1C API.
      *
-     * Fetches stock data and updates WooCommerce product stock quantities and prices.
+     * Fetches stock data and schedules batch processing via Action Scheduler.
      * Only updates existing products; does not create new ones.
      *
      * @param string $vendor_codes Optional comma-separated list of VendorCodes (SKUs). Empty returns all.
-     * @return array{updated: int, skipped: int, errors: int, total: int} Sync statistics.
+     * @return array{scheduled: int, total: int, session_id: string} Schedule statistics.
      * @throws \Throwable If API call fails.
      */
     public function update_products_stock( string $vendor_codes = '' ): array {
-        Logger::instance()->log( 'Starting products stock update', [
+        Logger::instance()->log( 'Starting products stock update (batch mode)', [
             'vendor_codes' => $vendor_codes ? substr( $vendor_codes, 0, 100 ) : '(all)',
             'user'         => wp_get_current_user()->user_login ?? 'system',
         ] );
 
-        $start_time = microtime( true );
-
         try {
+            // Generate unique session ID for this sync
+            $session_id = uniqid( 'stock_', true );
+
+            // Store session ID for tracking
+            update_option( self::OPTION_ACTIVE_SESSION, [
+                'session_id' => $session_id,
+                'type'       => 'stock',
+                'started_at' => current_time( 'mysql' ),
+            ] );
+
             // Fetch stock data from API
             $rows = $this->api->fetch_products_stock( $vendor_codes );
             $total = count( $rows );
 
-            $this->set_progress( 0, $total, 'Updating products stock...' );
+            $this->set_progress( 0, $total, 'Scheduling stock update batches...' );
 
-            // Sync stock batch
-            $stats = $this->product_service->sync_stock_batch( $rows );
+            // Split data into chunks of BATCH_SIZE items
+            $chunks = array_chunk( $rows, self::BATCH_SIZE );
+            $scheduled_batches = 0;
+
+            // Schedule each chunk as a background action
+            foreach ( $chunks as $index => $chunk ) {
+                if ( function_exists( 'as_schedule_single_action' ) ) {
+                    as_schedule_single_action(
+                        time() + ( $index * 5 ), // Stagger batches by 5 seconds
+                        self::HOOK_PROCESS_STOCK_BATCH,
+                        [ $chunk, $session_id ],
+                        'erp-sync'
+                    );
+                    $scheduled_batches++;
+                } else {
+                    // Fallback: process synchronously if Action Scheduler not available
+                    $this->product_service->sync_stock_batch( $chunk, $session_id );
+                }
+
+                $this->set_progress( $index + 1, count( $chunks ), sprintf( 'Scheduled batch %d of %d', $index + 1, count( $chunks ) ) );
+            }
+
+            // Schedule orphan cleanup after delay
+            if ( function_exists( 'as_schedule_single_action' ) ) {
+                as_schedule_single_action(
+                    time() + self::ORPHAN_CLEANUP_DELAY,
+                    self::HOOK_CLEANUP_ORPHANS,
+                    [ $session_id ],
+                    'erp-sync'
+                );
+            }
 
             // Update last sync time
             update_option( self::OPTION_LAST_STOCK_SYNC, current_time( 'mysql' ) );
 
-            $duration_ms = (int) round( ( microtime( true ) - $start_time ) * 1000 );
-
-            Logger::instance()->log( 'Products stock update completed', [
-                'updated'     => $stats['updated'],
-                'skipped'     => $stats['skipped'],
-                'errors'      => $stats['errors'],
-                'total'       => $stats['total'],
-                'duration_ms' => $duration_ms,
-                'user'        => wp_get_current_user()->user_login ?? 'system',
+            Logger::instance()->log( 'Products stock update batches scheduled', [
+                'session_id'        => $session_id,
+                'total_items'       => $total,
+                'batch_size'        => self::BATCH_SIZE,
+                'scheduled_batches' => $scheduled_batches,
+                'cleanup_delay'     => self::ORPHAN_CLEANUP_DELAY,
+                'user'              => wp_get_current_user()->user_login ?? 'system',
             ] );
 
             $this->clear_progress();
 
-            return $stats;
+            return [
+                'scheduled'  => $scheduled_batches,
+                'total'      => $total,
+                'session_id' => $session_id,
+            ];
 
         } catch ( \Throwable $e ) {
             $this->clear_progress();
@@ -286,6 +482,69 @@ class Sync_Service {
                 'user'  => wp_get_current_user()->user_login ?? 'system',
             ] );
             throw $e;
+        }
+    }
+
+    /**
+     * Process a single stock batch (called by Action Scheduler).
+     *
+     * @param array  $batch      Array of stock rows to process.
+     * @param string $session_id Unique session identifier for this sync.
+     */
+    public function process_stock_batch( array $batch, string $session_id ): void {
+        Logger::instance()->log( 'Processing stock batch', [
+            'session_id' => $session_id,
+            'batch_size' => count( $batch ),
+        ] );
+
+        try {
+            $stats = $this->product_service->sync_stock_batch( $batch, $session_id );
+
+            Logger::instance()->log( 'Stock batch processed', [
+                'session_id' => $session_id,
+                'updated'    => $stats['updated'],
+                'skipped'    => $stats['skipped'],
+                'errors'     => $stats['errors'],
+                'total'      => $stats['total'],
+            ] );
+
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Stock batch processing failed', [
+                'session_id' => $session_id,
+                'error'      => $e->getMessage(),
+            ] );
+        }
+    }
+
+    /**
+     * Cleanup orphaned products (called by Action Scheduler).
+     *
+     * Sets stock to 0 for products that were not touched during the sync session.
+     * Only affects products managed by ERP Sync (_erp_sync_managed = 1).
+     *
+     * @param string $session_id Unique session identifier for the sync that completed.
+     */
+    public function cleanup_orphans( string $session_id ): void {
+        Logger::instance()->log( 'Starting orphan cleanup', [
+            'session_id' => $session_id,
+        ] );
+
+        try {
+            $orphan_count = $this->product_service->zero_out_orphans( $session_id );
+
+            Logger::instance()->log( 'Orphan cleanup completed', [
+                'session_id'    => $session_id,
+                'orphan_count'  => $orphan_count,
+            ] );
+
+            // Clear active session after cleanup
+            delete_option( self::OPTION_ACTIVE_SESSION );
+
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Orphan cleanup failed', [
+                'session_id' => $session_id,
+                'error'      => $e->getMessage(),
+            ] );
         }
     }
 
