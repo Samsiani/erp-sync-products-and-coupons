@@ -376,7 +376,7 @@ class Sync_Service {
             'deleted'       => $deleted,
             'birthday'      => $birthday,
             'last_sync'     => get_option( self::OPTION_LAST_SYNC, '—' ),
-            'last_sync_user' => get_option( '_erp_sync_last_sync_user', '—' )
+            'last_sync_user' => get_option( 'erp_sync_last_sync_user', '—' )
         ];
     }
 

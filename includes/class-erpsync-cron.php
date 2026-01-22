@@ -49,10 +49,11 @@ class Cron {
     public static function get_interval_key(): string {
         $key = (string) get_option( self::OPTION_CRON_INTERVAL, 'erp_sync_10min' );
         
-        // Support migration from old WDCS interval keys
-        if ( strpos( $key, 'wdcs_' ) === 0 ) {
+        // Support migration from old WDCS interval keys (one-time check)
+        if ( strpos( $key, 'wdcs_' ) === 0 && ! get_option( 'erp_sync_cron_interval_migrated' ) ) {
             $key = str_replace( 'wdcs_', 'erp_sync_', $key );
             update_option( self::OPTION_CRON_INTERVAL, $key );
+            update_option( 'erp_sync_cron_interval_migrated', true );
         }
         
         if ( ! in_array( $key, [ 'erp_sync_5min','erp_sync_10min','erp_sync_15min' ], true ) ) {

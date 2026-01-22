@@ -53,7 +53,7 @@ class Security {
      */
     public static function ensure_encryption_key(): void {
         if ( ! get_option( self::OPTION_ENCRYPTION_KEY ) ) {
-            $key = base64_encode( openssl_random_pseudo_bytes( 32 ) );
+            $key = base64_encode( random_bytes( 32 ) );
             update_option( self::OPTION_ENCRYPTION_KEY, $key );
             Logger::instance()->log( 'Encryption key generated', [] );
         }

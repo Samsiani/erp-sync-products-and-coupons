@@ -368,6 +368,7 @@ class Admin {
 
         switch ( $field ) {
             case 'base_discount':
+                // Update both: _erp_sync_base_discount (our tracker) and coupon_amount (WooCommerce display)
                 update_post_meta( $coupon_id, '_erp_sync_base_discount', max( 0, intval( $value ) ) );
                 update_post_meta( $coupon_id, 'coupon_amount', max( 0, intval( $value ) ) );
                 break;
