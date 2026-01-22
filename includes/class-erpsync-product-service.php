@@ -564,6 +564,27 @@ class Product_Service {
     public const OPTION_BRANCH_SETTINGS = 'erp_sync_branch_settings';
 
     /**
+     * Warehouse locations to exclude from stock calculations.
+     *
+     * Products from these warehouses will be filtered out before
+     * calculating the total stock. The global Quantity from the ERP
+     * is ignored; instead, stock is recalculated from non-excluded warehouses.
+     *
+     * This is a system-level exclusion list for warehouses that should never
+     * appear on the website (e.g., internal warehouses). For admin-configurable
+     * branch exclusions, see OPTION_BRANCH_SETTINGS used in assign_branch_terms().
+     *
+     * Note: This constant is intentionally hard-coded for simplicity and
+     * predictability. The client's requirement is to exclude a specific
+     * internal warehouse that should never be shown to end users.
+     *
+     * @var array<string, bool> Warehouse location names as keys for O(1) lookup.
+     */
+    private const EXCLUDED_WAREHOUSE_LOCATIONS = [
+        'ძირითადი საწყობი' => true,
+    ];
+
+    /**
      * Synchronize a batch of product stock data.
      *
      * Updates stock quantities and prices for existing products.
@@ -694,6 +715,12 @@ class Product_Service {
      * Assigns branch taxonomy terms efficiently by comparing target vs current.
      * Logs changes to the audit log when values differ.
      *
+     * IMPORTANT: This method implements warehouse exclusion logic.
+     * The global Quantity from the ERP API is intentionally IGNORED.
+     * Stock is recalculated by summing quantities from non-excluded warehouses only.
+     * This ensures stock from internal/excluded warehouses (defined in
+     * EXCLUDED_WAREHOUSE_LOCATIONS) does not appear on the website.
+     *
      * @param \WC_Product $product    Product object.
      * @param array       $row        Stock data row from IBS API.
      * @param string      $session_id Optional unique session identifier for tracking sync.
@@ -736,23 +763,42 @@ class Product_Service {
             $sale_price = 0.0; // For comparison purposes
         }
 
-        // Parse quantity
-        $quantity = (int) $this->parse_numeric_value( $row['Quantity'] ?? 0 );
+        // ========== WAREHOUSE FILTERING & STOCK RECALCULATION ==========
+        // Step 1: Get all warehouses from API
+        $all_warehouses = $row['_warehouses'] ?? [];
+
+        // Step 2: Filter out excluded warehouse locations
+        // Only keep warehouses that are NOT in the exclusion list (O(1) lookup)
+        $valid_warehouses = array_filter( $all_warehouses, function ( $wh ) {
+            $location = $wh['Location'] ?? '';
+            return ! isset( self::EXCLUDED_WAREHOUSE_LOCATIONS[ $location ] );
+        } );
+
+        // Re-index array to ensure clean numeric keys after filtering
+        $valid_warehouses = array_values( $valid_warehouses );
+
+        // Step 3: Recalculate quantity from valid warehouses only
+        // The global $row['Quantity'] from the API is intentionally ignored because
+        // it includes stock from excluded warehouses (e.g., internal warehouses)
+        $quantity = 0;
+        foreach ( $valid_warehouses as $wh ) {
+            $quantity += (int) $this->parse_numeric_value( $wh['Quantity'] ?? 0 );
+        }
 
         // Enable stock management
         $product->set_manage_stock( true );
         $product->set_stock_quantity( $quantity );
 
-        // Set stock status based on quantity
+        // Set stock status based on recalculated quantity
         if ( $quantity > 0 ) {
             $product->set_stock_status( 'instock' );
         } else {
             $product->set_stock_status( 'outofstock' );
         }
 
-        // Save per-warehouse stock data
-        $warehouses = $row['_warehouses'] ?? [];
-        $product->update_meta_data( '_erp_sync_warehouse_data', $warehouses );
+        // Save per-warehouse stock data (only valid, non-excluded warehouses)
+        // This ensures excluded warehouses are hidden from the frontend
+        $product->update_meta_data( '_erp_sync_warehouse_data', $valid_warehouses );
 
         // Update sync timestamp
         $product->update_meta_data( '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
@@ -763,9 +809,11 @@ class Product_Service {
         }
 
         // Assign branch taxonomy terms (performance-optimized)
-        $this->assign_branch_terms( $product, $warehouses );
+        // Pass only valid warehouses so taxonomy accurately reflects available branches
+        $this->assign_branch_terms( $product, $valid_warehouses );
 
         // ========== LOG CHANGES TO AUDIT LOG ==========
+        // Pass valid warehouses and recalculated quantity for accurate audit logging
         $this->log_product_changes(
             $product,
             (float) $old_regular_price,
@@ -775,7 +823,7 @@ class Product_Service {
             (int) $old_stock_qty,
             $quantity,
             $old_warehouses,
-            $warehouses
+            $valid_warehouses
         );
     }
 
