@@ -1,13 +1,15 @@
 <?php
-namespace WDCS;
+declare(strict_types=1);
+
+namespace ERPSync;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Sync_Service {
 
-    const OPTION_LAST_SYNC = 'wdcs_last_sync';
+    const OPTION_LAST_SYNC = 'erp_sync_last_sync';
 
-    private $api;
+    private API_Client $api;
 
     public function __construct( API_Client $api ) {
         $this->api = $api;
@@ -16,7 +18,7 @@ class Sync_Service {
     /**
      * Import only new codes that don't exist locally
      */
-    public function import_new_only() {
+    public function import_new_only(): array {
         $cards = $this->api->fetch_cards_remote();
         $created = 0;
         $total = count( $cards );
@@ -26,7 +28,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('WDCS\\wdcs_format_code') ? wdcs_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( ! $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, false, false );
@@ -52,7 +54,7 @@ class Sync_Service {
      * Update only existing codes (NEW FEATURE)
      * ALWAYS overwrites manual changes with 1C data
      */
-    public function update_existing_only() {
+    public function update_existing_only(): array {
         $cards = $this->api->fetch_cards_remote();
         $updated = 0;
         $total = count( $cards );
@@ -62,7 +64,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('WDCS\\wdcs_format_code') ? wdcs_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, true, false );
@@ -88,7 +90,7 @@ class Sync_Service {
      * Full sync: create new and update existing
      * ALWAYS overwrites manual changes with 1C data
      */
-    public function full_sync() {
+    public function full_sync(): array {
         $cards = $this->api->fetch_cards_remote();
         $created = 0;
         $updated = 0;
@@ -99,7 +101,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('WDCS\\wdcs_format_code') ? wdcs_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             if ( $this->coupon_exists( $formatted ) ) {
                 $this->create_or_update_coupon( $card, true, true );
@@ -129,7 +131,7 @@ class Sync_Service {
      * Force import all: re-import everything from 1C, overwriting local data (NEW FEATURE)
      * ALWAYS overwrites manual changes with 1C data
      */
-    public function force_import_all() {
+    public function force_import_all(): array {
         $cards = $this->api->fetch_cards_remote();
         $created = 0;
         $updated = 0;
@@ -140,7 +142,7 @@ class Sync_Service {
         foreach ( $cards as $index => $card ) {
             if ( empty( $card['CardCode'] ) ) continue;
             
-            $formatted = function_exists('WDCS\\wdcs_format_code') ? wdcs_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+            $formatted = erp_sync_format_code( $card['CardCode'] );
             
             $exists = $this->coupon_exists( $formatted );
             
@@ -173,7 +175,7 @@ class Sync_Service {
     /**
      * Check if coupon exists
      */
-    private function coupon_exists( $code ) {
+    private function coupon_exists( string $code ): bool {
         return (bool) wc_get_coupon_id_by_code( $code );
     }
 
@@ -185,8 +187,8 @@ class Sync_Service {
      * @param bool $is_update Whether this is an update operation
      * @param bool $force Force overwrite all data (for force_import_all and full_sync)
      */
-    public function create_or_update_coupon( array $card, $is_update, $force = false ) {
-        $code = function_exists('WDCS\\wdcs_format_code') ? wdcs_format_code( $card['CardCode'] ) : sanitize_title( $card['CardCode'] );
+    public function create_or_update_coupon( array $card, bool $is_update, bool $force = false ): void {
+        $code = erp_sync_format_code( $card['CardCode'] );
         $coupon_id = wc_get_coupon_id_by_code( $code );
 
         // Create new coupon if doesn't exist
@@ -198,7 +200,7 @@ class Sync_Service {
                 'post_type'    => 'shop_coupon',
                 'post_author'  => get_current_user_id() ?: 1,
                 'post_excerpt' => sprintf( 
-                    __( 'Synchronized discount card - %s', 'wdcs' ),
+                    __( 'Synchronized discount card - %s', 'erp-sync' ),
                     sanitize_text_field( $card['Name'] ?? '' )
                 ),
             ] );
@@ -226,7 +228,7 @@ class Sync_Service {
             update_post_meta( $coupon_id, 'minimum_amount', '' );
             update_post_meta( $coupon_id, 'maximum_amount', '' );
             update_post_meta( $coupon_id, 'free_shipping', 'no' );
-            update_post_meta( $coupon_id, '_wdcs_managed', 1 );
+            update_post_meta( $coupon_id, '_erp_sync_managed', 1 );
             
             Logger::instance()->log( 'Coupon created', [
                 'code'      => $code,
@@ -246,7 +248,7 @@ class Sync_Service {
         // This ensures 1C is always the source of truth
         // Manual changes will be overwritten on ANY sync
         update_post_meta( $coupon_id, 'coupon_amount', $new_amount );
-        update_post_meta( $coupon_id, '_wdcs_base_discount', $new_amount );
+        update_post_meta( $coupon_id, '_erp_sync_base_discount', $new_amount );
         
         // Log if amount changed
         if ( $is_update && $old_amount != $new_amount ) {
@@ -261,17 +263,17 @@ class Sync_Service {
             ] );
         }
 
-        // Always update WDCS meta data
-        update_post_meta( $coupon_id, '_wdcs_inn', sanitize_text_field( $card['Inn'] ?? '' ) );
-        update_post_meta( $coupon_id, '_wdcs_name', sanitize_text_field( $card['Name'] ?? '' ) );
-        update_post_meta( $coupon_id, '_wdcs_mobile', sanitize_text_field( $card['MobileNumber'] ?? '' ) );
-        update_post_meta( $coupon_id, '_wdcs_dob', sanitize_text_field( $card['DateOfBirth'] ?? '' ) );
-        update_post_meta( $coupon_id, '_wdcs_is_deleted', ! empty( $card['IsDeleted'] ) ? 'yes' : 'no' );
-        update_post_meta( $coupon_id, '_wdcs_synced_at', current_time( 'mysql' ) );
-        update_post_meta( $coupon_id, '_wdcs_last_sync_user', wp_get_current_user()->user_login ?? 'system' );
+        // Always update ERPSync meta data
+        update_post_meta( $coupon_id, '_erp_sync_inn', sanitize_text_field( $card['Inn'] ?? '' ) );
+        update_post_meta( $coupon_id, '_erp_sync_name', sanitize_text_field( $card['Name'] ?? '' ) );
+        update_post_meta( $coupon_id, '_erp_sync_mobile', sanitize_text_field( $card['MobileNumber'] ?? '' ) );
+        update_post_meta( $coupon_id, '_erp_sync_dob', sanitize_text_field( $card['DateOfBirth'] ?? '' ) );
+        update_post_meta( $coupon_id, '_erp_sync_is_deleted', ! empty( $card['IsDeleted'] ) ? 'yes' : 'no' );
+        update_post_meta( $coupon_id, '_erp_sync_synced_at', current_time( 'mysql' ) );
+        update_post_meta( $coupon_id, '_erp_sync_last_sync_user', wp_get_current_user()->user_login ?? 'system' );
         
         if ( $force ) {
-            update_post_meta( $coupon_id, '_wdcs_forced_update', current_time( 'mysql' ) );
+            update_post_meta( $coupon_id, '_erp_sync_forced_update', current_time( 'mysql' ) );
         }
         
         // Update post excerpt if force mode or new coupon
@@ -279,7 +281,7 @@ class Sync_Service {
             wp_update_post( [
                 'ID'           => $coupon_id,
                 'post_excerpt' => sprintf( 
-                    __( 'Synchronized discount card - %s (Last sync: %s by %s)', 'wdcs' ),
+                    __( 'Synchronized discount card - %s (Last sync: %s by %s)', 'erp-sync' ),
                     sanitize_text_field( $card['Name'] ?? '' ),
                     current_time( 'Y-m-d H:i:s' ),
                     wp_get_current_user()->user_login ?? 'system'
@@ -304,7 +306,7 @@ class Sync_Service {
     /**
      * Set sync progress for UI feedback
      */
-    private function set_progress( $current, $total, $status = '' ) {
+    private function set_progress( int $current, int $total, string $status = '' ): void {
         $progress = [
             'progress'    => $total > 0 ? round( ( $current / $total ) * 100 ) : 0,
             'current'     => $current,
@@ -314,27 +316,27 @@ class Sync_Service {
             'user'        => wp_get_current_user()->user_login ?? 'system'
         ];
         
-        set_transient( 'wdcs_sync_progress', $progress, 300 ); // 5 minutes
+        set_transient( 'erp_sync_sync_progress', $progress, 300 ); // 5 minutes
     }
 
     /**
      * Clear progress transient
      */
-    private function clear_progress() {
-        delete_transient( 'wdcs_sync_progress' );
+    private function clear_progress(): void {
+        delete_transient( 'erp_sync_sync_progress' );
     }
 
     /**
-     * Get list of all WDCS-managed coupons
+     * Get list of all ERPSync-managed coupons
      */
-    public function get_managed_coupons() {
+    public function get_managed_coupons(): array {
         $args = [
             'post_type'      => 'shop_coupon',
             'posts_per_page' => -1,
             'post_status'    => 'any',
             'meta_query'     => [
                 [
-                    'key'     => '_wdcs_managed',
+                    'key'     => '_erp_sync_managed',
                     'value'   => '1',
                     'compare' => '='
                 ]
@@ -347,7 +349,7 @@ class Sync_Service {
     /**
      * Get sync statistics
      */
-    public function get_sync_stats() {
+    public function get_sync_stats(): array {
         $managed_coupons = $this->get_managed_coupons();
         $total = count( $managed_coupons );
         $active = 0;
@@ -355,13 +357,13 @@ class Sync_Service {
         $birthday = 0;
         
         foreach ( $managed_coupons as $coupon ) {
-            $is_deleted = get_post_meta( $coupon->ID, '_wdcs_is_deleted', true ) === 'yes';
+            $is_deleted = get_post_meta( $coupon->ID, '_erp_sync_is_deleted', true ) === 'yes';
             
             if ( $is_deleted ) {
                 $deleted++;
             } else {
                 $active++;
-                $dob = get_post_meta( $coupon->ID, '_wdcs_dob', true );
+                $dob = get_post_meta( $coupon->ID, '_erp_sync_dob', true );
                 if ( $this->is_in_birthday_window( $dob ) ) {
                     $birthday++;
                 }
@@ -374,14 +376,14 @@ class Sync_Service {
             'deleted'       => $deleted,
             'birthday'      => $birthday,
             'last_sync'     => get_option( self::OPTION_LAST_SYNC, '—' ),
-            'last_sync_user' => get_option( '_wdcs_last_sync_user', '—' )
+            'last_sync_user' => get_option( 'erp_sync_last_sync_user', '—' )
         ];
     }
 
     /**
      * Check if date is in birthday window
      */
-    private function is_in_birthday_window( $dob ) {
+    private function is_in_birthday_window( string $dob ): bool {
         if ( empty( $dob ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $dob ) ) {
             return false;
         }
@@ -414,7 +416,7 @@ class Sync_Service {
     /**
      * Check if year is leap year
      */
-    private function is_leap_year( $y ) {
+    private function is_leap_year( int $y ): bool {
         return ( ( $y % 4 === 0 ) && ( $y % 100 !== 0 ) ) || ( $y % 400 === 0 );
     }
 }

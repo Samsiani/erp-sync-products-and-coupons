@@ -1,7 +1,7 @@
-/* WDCS Admin Styles - Version 1.2.0 */
+/* ERP Sync Admin Styles - Version 1.2.0 */
 
 /* Main Container */
-.wdcs-admin-wrap {
+.erp-sync-admin-wrap {
     background: #fff;
     padding: 20px;
     margin-top: 20px;
@@ -9,14 +9,14 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-.wdcs-version {
+.erp-sync-version {
     font-size: 0.9em;
     color: #666;
     font-weight: normal;
 }
 
 /* Progress Bar */
-.wdcs-progress-wrap {
+.erp-sync-progress-wrap {
     margin: 20px 0;
     padding: 15px;
     background: #f0f6fc;
@@ -24,7 +24,7 @@
     border-radius: 6px;
 }
 
-.wdcs-progress-bar {
+.erp-sync-progress-bar {
     width: 100%;
     height: 30px;
     background: #e0e0e0;
@@ -33,14 +33,14 @@
     position: relative;
 }
 
-.wdcs-progress-fill {
+.erp-sync-progress-fill {
     height: 100%;
     background: linear-gradient(90deg, #2271b1 0%, #135e96 100%);
     transition: width 0.3s ease;
     border-radius: 15px;
 }
 
-.wdcs-progress-text {
+.erp-sync-progress-text {
     text-align: center;
     margin-top: 10px;
     font-weight: 500;
@@ -48,16 +48,16 @@
 }
 
 /* Tabs */
-.wdcs-nav-tabs {
+.erp-sync-nav-tabs {
     border-bottom: 1px solid #ccd0d4;
     margin-bottom: 20px;
 }
 
-.wdcs-tab-content {
+.erp-sync-tab-content {
     padding: 20px 0;
 }
 
-.wdcs-tab-content h2 {
+.erp-sync-tab-content h2 {
     margin-top: 0;
     padding-top: 0;
     border-bottom: 1px solid #e5e5e5;
@@ -65,7 +65,7 @@
 }
 
 /* Status Badges */
-.wdcs-status-badge {
+.erp-sync-status-badge {
     display: inline-block;
     padding: 4px 10px;
     border-radius: 12px;
@@ -74,55 +74,55 @@
     line-height: 1.5;
 }
 
-.wdcs-status-active {
+.erp-sync-status-active {
     background: #d4edda;
     color: #155724;
     border: 1px solid #c3e6cb;
 }
 
-.wdcs-status-deleted {
+.erp-sync-status-deleted {
     background: #f8d7da;
     color: #721c24;
     border: 1px solid #f5c6cb;
 }
 
-.wdcs-status-birthday {
+.erp-sync-status-birthday {
     background: #fff3cd;
     color: #856404;
     border: 1px solid #ffeaa7;
 }
 
 /* Editable Fields (Quick Edit) */
-.wdcs-editable {
+.erp-sync-editable {
     cursor: pointer;
     padding: 4px 8px;
     border-radius: 4px;
     transition: background 0.2s;
 }
 
-.wdcs-editable:hover {
+.erp-sync-editable:hover {
     background: #f0f0f1;
     box-shadow: 0 0 0 1px #2271b1;
 }
 
-.wdcs-editable.editing {
+.erp-sync-editable.editing {
     background: #fff;
     box-shadow: 0 0 0 2px #2271b1;
 }
 
 /* Action Buttons */
-.wdcs-action-buttons {
+.erp-sync-action-buttons {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 15px;
     margin: 20px 0;
 }
 
-.wdcs-action-buttons form {
+.erp-sync-action-buttons form {
     display: block !important;
 }
 
-.wdcs-action-buttons .button {
+.erp-sync-action-buttons .button {
     width: 100%;
     text-align: center;
     height: auto;
@@ -131,26 +131,26 @@
     line-height: 1.4;
 }
 
-.wdcs-action-buttons .description {
+.erp-sync-action-buttons .description {
     font-size: 11px;
     margin-top: 5px;
     color: #666;
 }
 
 /* Diagnostics */
-.wdcs-diagnostics-buttons {
+.erp-sync-diagnostics-buttons {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
     margin: 20px 0;
 }
 
-.wdcs-diagnostics-buttons form {
+.erp-sync-diagnostics-buttons form {
     display: inline-block;
 }
 
 /* Notices */
-.wdcs-notice {
+.erp-sync-notice {
     padding: 12px;
     background: #fff3cd;
     border-left: 4px solid #ffc107;
@@ -158,7 +158,7 @@
     border-radius: 4px;
 }
 
-.wdcs-error {
+.erp-sync-error {
     color: #d63638;
     font-weight: 500;
 }
@@ -198,68 +198,68 @@ textarea.code {
 
 /* Responsive */
 @media screen and (max-width: 782px) {
-    .wdcs-action-buttons {
+    .erp-sync-action-buttons {
         grid-template-columns: 1fr;
     }
     
-    .wdcs-diagnostics-buttons {
+    .erp-sync-diagnostics-buttons {
         flex-direction: column;
     }
     
-    .wdcs-diagnostics-buttons form {
+    .erp-sync-diagnostics-buttons form {
         display: block;
         width: 100%;
     }
     
-    .wdcs-diagnostics-buttons .button {
+    .erp-sync-diagnostics-buttons .button {
         width: 100%;
     }
 }
 
 /* Loading Animation */
-@keyframes wdcs-spin {
+@keyframes erp-sync-spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
 
-.wdcs-loading {
+.erp-sync-loading {
     display: inline-block;
     width: 16px;
     height: 16px;
     border: 2px solid #f3f3f3;
     border-top: 2px solid #2271b1;
     border-radius: 50%;
-    animation: wdcs-spin 1s linear infinite;
+    animation: erp-sync-spin 1s linear infinite;
     margin-left: 8px;
     vertical-align: middle;
 }
 
 /* Coupon List Table Columns */
-.widefat .column-wdcs_status {
+.widefat .column-erp_sync_status {
     width: 120px;
 }
 
-.widefat .column-wdcs_base_discount {
+.widefat .column-erp_sync_base_discount {
     width: 80px;
 }
 
-.widefat .column-wdcs_is_deleted {
+.widefat .column-erp_sync_is_deleted {
     width: 80px;
 }
 
-.widefat .column-wdcs_dob {
+.widefat .column-erp_sync_dob {
     width: 100px;
 }
 
 /* Settings Form */
-.wdcs-settings-form .submit {
+.erp-sync-settings-form .submit {
     padding-top: 20px;
     border-top: 1px solid #e5e5e5;
     margin-top: 20px;
 }
 
 /* Highlight NEW features */
-.wdcs-action-buttons strong {
+.erp-sync-action-buttons strong {
     background: #2271b1;
     color: #fff;
     padding: 2px 6px;
