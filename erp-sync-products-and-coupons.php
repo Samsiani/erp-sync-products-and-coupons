@@ -142,6 +142,7 @@ add_action( 'plugins_loaded', 'erp_sync_load_textdomain' );
 require_once ERPSYNC_DIR . 'includes/class-erpsync-logger.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-security.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-api-client.php';
+require_once ERPSYNC_DIR . 'includes/class-erpsync-product-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-sync-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-webhook.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-coupon-dynamic.php';

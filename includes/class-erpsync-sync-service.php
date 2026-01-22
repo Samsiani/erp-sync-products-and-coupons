@@ -8,11 +8,15 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Sync_Service {
 
     const OPTION_LAST_SYNC = 'erp_sync_last_sync';
+    const OPTION_LAST_PRODUCTS_SYNC = 'erp_sync_last_products_sync';
+    const OPTION_LAST_STOCK_SYNC = 'erp_sync_last_stock_sync';
 
     private API_Client $api;
+    private Product_Service $product_service;
 
-    public function __construct( API_Client $api ) {
+    public function __construct( API_Client $api, ?Product_Service $product_service = null ) {
         $this->api = $api;
+        $this->product_service = $product_service ?? new Product_Service();
     }
 
     /**
@@ -170,6 +174,119 @@ class Sync_Service {
         ] );
         
         return [ 'created' => $created, 'updated' => $updated, 'total_remote' => $total ];
+    }
+
+    /**
+     * Import products catalog from IBS/1C API.
+     *
+     * Fetches product catalog data and synchronizes with WooCommerce products.
+     * Creates new products or updates existing ones based on VendorCode (SKU).
+     *
+     * @return array{created: int, updated: int, errors: int, total: int} Sync statistics.
+     * @throws \Throwable If API call fails.
+     */
+    public function import_products_catalog(): array {
+        Logger::instance()->log( 'Starting products catalog import', [
+            'user' => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        $start_time = microtime( true );
+
+        try {
+            // Fetch catalog data from API
+            $rows = $this->api->fetch_products_catalog();
+            $total = count( $rows );
+
+            $this->set_progress( 0, $total, 'Processing products catalog...' );
+
+            // Sync catalog batch
+            $stats = $this->product_service->sync_catalog_batch( $rows );
+
+            // Update last sync time
+            update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
+
+            $duration_ms = (int) round( ( microtime( true ) - $start_time ) * 1000 );
+
+            Logger::instance()->log( 'Products catalog import completed', [
+                'created'     => $stats['created'],
+                'updated'     => $stats['updated'],
+                'errors'      => $stats['errors'],
+                'total'       => $stats['total'],
+                'duration_ms' => $duration_ms,
+                'user'        => wp_get_current_user()->user_login ?? 'system',
+            ] );
+
+            $this->clear_progress();
+
+            // Clear product service cache to free memory
+            $this->product_service->clear_cache();
+
+            return $stats;
+
+        } catch ( \Throwable $e ) {
+            $this->clear_progress();
+            Logger::instance()->log( 'Products catalog import failed', [
+                'error' => $e->getMessage(),
+                'user'  => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw $e;
+        }
+    }
+
+    /**
+     * Update products stock and prices from IBS/1C API.
+     *
+     * Fetches stock data and updates WooCommerce product stock quantities and prices.
+     * Only updates existing products; does not create new ones.
+     *
+     * @param string $vendor_codes Optional comma-separated list of VendorCodes (SKUs). Empty returns all.
+     * @return array{updated: int, skipped: int, errors: int, total: int} Sync statistics.
+     * @throws \Throwable If API call fails.
+     */
+    public function update_products_stock( string $vendor_codes = '' ): array {
+        Logger::instance()->log( 'Starting products stock update', [
+            'vendor_codes' => $vendor_codes ? substr( $vendor_codes, 0, 100 ) : '(all)',
+            'user'         => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        $start_time = microtime( true );
+
+        try {
+            // Fetch stock data from API
+            $rows = $this->api->fetch_products_stock( $vendor_codes );
+            $total = count( $rows );
+
+            $this->set_progress( 0, $total, 'Updating products stock...' );
+
+            // Sync stock batch
+            $stats = $this->product_service->sync_stock_batch( $rows );
+
+            // Update last sync time
+            update_option( self::OPTION_LAST_STOCK_SYNC, current_time( 'mysql' ) );
+
+            $duration_ms = (int) round( ( microtime( true ) - $start_time ) * 1000 );
+
+            Logger::instance()->log( 'Products stock update completed', [
+                'updated'     => $stats['updated'],
+                'skipped'     => $stats['skipped'],
+                'errors'      => $stats['errors'],
+                'total'       => $stats['total'],
+                'duration_ms' => $duration_ms,
+                'user'        => wp_get_current_user()->user_login ?? 'system',
+            ] );
+
+            $this->clear_progress();
+
+            return $stats;
+
+        } catch ( \Throwable $e ) {
+            $this->clear_progress();
+            Logger::instance()->log( 'Products stock update failed', [
+                'error' => $e->getMessage(),
+                'user'  => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw $e;
+        }
     }
 
     /**
