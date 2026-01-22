@@ -359,7 +359,7 @@ class Product_Service {
                 }
 
                 // Set product data
-                $this->set_product_catalog_data( $product, $row );
+                $this->set_product_catalog_data( $product, $row, $attribute_mapping );
 
                 // Save product
                 $saved_id = $product->save();
@@ -405,10 +405,11 @@ class Product_Service {
     /**
      * Set product catalog data from IBS row.
      *
-     * @param \WC_Product $product Product object.
-     * @param array       $row     Product data row from IBS API.
+     * @param \WC_Product $product           Product object.
+     * @param array       $row               Product data row from IBS API.
+     * @param array       $attribute_mapping Attribute mapping configuration.
      */
-    private function set_product_catalog_data( \WC_Product $product, array $row ): void {
+    private function set_product_catalog_data( \WC_Product $product, array $row, array $attribute_mapping ): void {
         // Set basic product data
         $product->set_name( sanitize_text_field( $row['ProductName'] ?? '' ) );
         $product->set_sku( sanitize_text_field( $row['VendorCode'] ?? '' ) );
@@ -419,7 +420,7 @@ class Product_Service {
         $product->update_meta_data( '_erp_sync_synced_at', current_time( 'mysql' ) );
 
         // Process and set attributes
-        $attributes = $this->build_product_attributes( $row );
+        $attributes = $this->build_product_attributes( $row, $attribute_mapping );
         if ( ! empty( $attributes ) ) {
             $product->set_attributes( $attributes );
         }
@@ -430,14 +431,12 @@ class Product_Service {
      *
      * Uses dynamic attribute mapping from database settings.
      *
-     * @param array $row Product data row from IBS API.
+     * @param array $row               Product data row from IBS API.
+     * @param array $attribute_mapping Attribute mapping configuration.
      * @return \WC_Product_Attribute[] Array of product attributes.
      */
-    private function build_product_attributes( array $row ): array {
+    private function build_product_attributes( array $row, array $attribute_mapping ): array {
         $attributes = [];
-
-        // Get dynamic attribute mapping
-        $attribute_mapping = $this->get_attribute_mapping();
 
         foreach ( $attribute_mapping as $field_name => $taxonomy_slug ) {
             $value = $row[ $field_name ] ?? '';
