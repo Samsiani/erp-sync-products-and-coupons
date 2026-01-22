@@ -51,13 +51,19 @@ class Frontend {
      */
     private static function get_inline_css(): string {
         return '
-            .erp-sync-branch-stock {
+            .erp-sync-branch-accordion {
                 margin: 15px 0;
                 padding: 10px 0;
             }
-            .erp-sync-branch-stock-title {
-                font-weight: 600;
-                margin-bottom: 8px;
+            .erp-sync-branch-summary {
+                cursor: pointer;
+                font-weight: bold;
+                margin-bottom: 10px;
+                outline: none;
+                list-style: revert;
+            }
+            .erp-sync-branch-summary::-webkit-details-marker {
+                display: initial;
             }
             .erp-sync-branch-stock-list {
                 list-style: none;
@@ -196,8 +202,8 @@ class Frontend {
         // Build HTML
         ob_start();
         ?>
-        <div class="erp-sync-branch-stock">
-            <div class="erp-sync-branch-stock-title"><?php esc_html_e( 'Availability by Branch', 'erp-sync' ); ?></div>
+        <details class="erp-sync-branch-accordion">
+            <summary class="erp-sync-branch-summary"><?php esc_html_e( 'Availability by Branch', 'erp-sync' ); ?></summary>
             <ul class="erp-sync-branch-stock-list">
                 <?php foreach ( $display_items as $item ) : ?>
                     <li class="erp-sync-branch-stock-item">
@@ -209,7 +215,7 @@ class Frontend {
                     </li>
                 <?php endforeach; ?>
             </ul>
-        </div>
+        </details>
         <?php
         return ob_get_clean();
     }
