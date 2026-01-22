@@ -1141,16 +1141,16 @@ class Admin {
                                     $settings = $branch_settings[ $branch_name ] ?? [];
                                     $alias    = $settings['alias'] ?? '';
                                     $excluded = ! empty( $settings['excluded'] );
-                                    $safe_key = sanitize_key( $branch_name );
+                                    $branch_hash = md5( $branch_name );
                                 ?>
                                     <tr>
                                         <td>
                                             <code><?php echo esc_html( $branch_name ); ?></code>
-                                            <input type="hidden" name="branches[<?php echo esc_attr( $safe_key ); ?>][original]" value="<?php echo esc_attr( $branch_name ); ?>">
+                                            <input type="hidden" name="branches[<?php echo esc_attr( $branch_hash ); ?>][original]" value="<?php echo esc_attr( $branch_name ); ?>">
                                         </td>
                                         <td>
                                             <input type="text" 
-                                                   name="branches[<?php echo esc_attr( $safe_key ); ?>][alias]" 
+                                                   name="branches[<?php echo esc_attr( $branch_hash ); ?>][alias]" 
                                                    value="<?php echo esc_attr( $alias ); ?>" 
                                                    class="regular-text" 
                                                    placeholder="<?php echo esc_attr( $branch_name ); ?>">
@@ -1158,7 +1158,7 @@ class Admin {
                                         <td>
                                             <label>
                                                 <input type="checkbox" 
-                                                       name="branches[<?php echo esc_attr( $safe_key ); ?>][excluded]" 
+                                                       name="branches[<?php echo esc_attr( $branch_hash ); ?>][excluded]" 
                                                        value="1" 
                                                        <?php checked( $excluded ); ?>>
                                                 <?php _e('Hide from frontend', 'erp-sync'); ?>
