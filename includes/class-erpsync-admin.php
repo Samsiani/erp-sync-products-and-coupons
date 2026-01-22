@@ -27,6 +27,9 @@ class Admin {
         add_action( 'admin_post_erp_sync_import_products_catalog', [ __CLASS__, 'handle_import_products_catalog' ] );
         add_action( 'admin_post_erp_sync_update_products_stock', [ __CLASS__, 'handle_update_products_stock' ] );
 
+        // Branch settings
+        add_action( 'admin_post_erp_sync_save_branches', [ __CLASS__, 'handle_save_branches' ] );
+
         // Cron & diagnostics
         add_action( 'admin_post_erp_sync_run_cron_now', [ __CLASS__, 'handle_run_cron_now' ] );
         add_action( 'admin_post_erp_sync_download_last_xml', [ __CLASS__, 'handle_download_last_xml' ] );
@@ -228,6 +231,43 @@ class Admin {
                 'stockerr' => rawurlencode( $e->getMessage() ),
             ], admin_url( 'admin.php' ) ) );
         }
+        exit;
+    }
+
+    public static function handle_save_branches(): void {
+        check_admin_referer( 'erp_sync_save_branches' );
+        if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
+
+        $branches_input = $_POST['branches'] ?? [];
+        $branch_settings = [];
+
+        if ( is_array( $branches_input ) ) {
+            foreach ( $branches_input as $data ) {
+                $original_name = sanitize_text_field( $data['original'] ?? '' );
+                if ( empty( $original_name ) ) {
+                    continue;
+                }
+
+                $alias    = sanitize_text_field( $data['alias'] ?? '' );
+                $excluded = ! empty( $data['excluded'] );
+
+                $branch_settings[ $original_name ] = [
+                    'alias'    => $alias,
+                    'excluded' => $excluded,
+                ];
+            }
+        }
+
+        update_option( Product_Service::OPTION_BRANCH_SETTINGS, $branch_settings );
+
+        Logger::instance()->log( 'Branch settings saved', [
+            'branches_count' => count( $branch_settings ),
+        ] );
+
+        wp_redirect( add_query_arg( [
+            'page'           => self::MENU_SLUG,
+            'branches_saved' => 1,
+        ], admin_url( 'admin.php' ) ) );
         exit;
     }
 
@@ -466,7 +506,7 @@ class Admin {
 
     private static function render_notices(): void {
         $notices = [];
-        $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr'];
+        $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr','branches_saved'];
         
         foreach ( $notice_keys as $k ) {
             if ( ! isset( $_GET[$k] ) ) continue;
@@ -550,6 +590,9 @@ class Admin {
                     break;
                 case 'stockerr':
                     $notices[] = ['error', sprintf( __('Stock & prices sync failed: %s', 'erp-sync' ), esc_html( urldecode($_GET['stockerr']) ) )];
+                    break;
+                case 'branches_saved':
+                    $notices[] = ['success', __( 'Branch settings saved successfully.', 'erp-sync' )];
                     break;
             }
         }
@@ -637,6 +680,7 @@ class Admin {
             <h2 class="nav-tab-wrapper erp-sync-nav-tabs">
                 <a href="#tab-settings" class="nav-tab nav-tab-active"><?php _e('Settings', 'erp-sync'); ?></a>
                 <a href="#tab-actions" class="nav-tab"><?php _e('Actions', 'erp-sync'); ?></a>
+                <a href="#tab-branches" class="nav-tab"><?php _e('Branches', 'erp-sync'); ?></a>
                 <a href="#tab-webhooks" class="nav-tab"><?php _e('Webhooks', 'erp-sync'); ?></a>
                 <a href="#tab-security" class="nav-tab"><?php _e('Security', 'erp-sync'); ?></a>
                 <a href="#tab-diagnostics" class="nav-tab"><?php _e('Diagnostics', 'erp-sync'); ?></a>
@@ -1054,6 +1098,106 @@ class Admin {
                         <?php submit_button( __('Run Scheduled Import Now','erp-sync'), 'secondary', 'submit', false ); ?>
                     </form>
                 </div>
+            </div>
+
+            <!-- Branches Tab (outside the main settings form - contains its own form) -->
+            <div id="tab-branches" class="erp-sync-tab-content" style="display:none;">
+                <h2><?php _e( 'Branch Management', 'erp-sync' ); ?></h2>
+                <p class="description"><?php _e('Manage how warehouse branches are displayed on product pages. Branches are automatically discovered during stock sync.', 'erp-sync'); ?></p>
+                
+                <?php
+                // Get detected branches and current settings
+                $detected_branches = get_option( Product_Service::OPTION_DETECTED_BRANCHES, [] );
+                $branch_settings   = get_option( Product_Service::OPTION_BRANCH_SETTINGS, [] );
+                
+                if ( ! is_array( $detected_branches ) ) {
+                    $detected_branches = [];
+                }
+                if ( ! is_array( $branch_settings ) ) {
+                    $branch_settings = [];
+                }
+                ?>
+                
+                <?php if ( empty( $detected_branches ) ) : ?>
+                    <div class="erp-sync-notice" style="margin: 20px 0; padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107;">
+                        <strong><?php _e('No branches detected yet.', 'erp-sync'); ?></strong>
+                        <p><?php _e('Run a Stock Sync from the Actions tab to discover available branches from your ERP system.', 'erp-sync'); ?></p>
+                    </div>
+                <?php else : ?>
+                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
+                        <?php wp_nonce_field( 'erp_sync_save_branches' ); ?>
+                        <input type="hidden" name="action" value="erp_sync_save_branches">
+                        
+                        <table class="widefat fixed striped" style="margin-top: 15px;">
+                            <thead>
+                                <tr>
+                                    <th style="width: 30%;"><?php _e('Original Name (from ERP)', 'erp-sync'); ?></th>
+                                    <th style="width: 40%;"><?php _e('Display Name (Alias)', 'erp-sync'); ?></th>
+                                    <th style="width: 15%;"><?php _e('Exclude', 'erp-sync'); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ( $detected_branches as $branch_name ) : 
+                                    $settings = $branch_settings[ $branch_name ] ?? [];
+                                    $alias    = $settings['alias'] ?? '';
+                                    $excluded = ! empty( $settings['excluded'] );
+                                    $safe_key = sanitize_key( $branch_name );
+                                ?>
+                                    <tr>
+                                        <td>
+                                            <code><?php echo esc_html( $branch_name ); ?></code>
+                                            <input type="hidden" name="branches[<?php echo esc_attr( $safe_key ); ?>][original]" value="<?php echo esc_attr( $branch_name ); ?>">
+                                        </td>
+                                        <td>
+                                            <input type="text" 
+                                                   name="branches[<?php echo esc_attr( $safe_key ); ?>][alias]" 
+                                                   value="<?php echo esc_attr( $alias ); ?>" 
+                                                   class="regular-text" 
+                                                   placeholder="<?php echo esc_attr( $branch_name ); ?>">
+                                        </td>
+                                        <td>
+                                            <label>
+                                                <input type="checkbox" 
+                                                       name="branches[<?php echo esc_attr( $safe_key ); ?>][excluded]" 
+                                                       value="1" 
+                                                       <?php checked( $excluded ); ?>>
+                                                <?php _e('Hide from frontend', 'erp-sync'); ?>
+                                            </label>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                        
+                        <p class="submit">
+                            <?php submit_button( __('Save Branch Settings', 'erp-sync'), 'primary', 'submit', false ); ?>
+                        </p>
+                    </form>
+                    
+                    <hr style="margin: 30px 0;">
+                    
+                    <h3><?php _e('Preview', 'erp-sync'); ?></h3>
+                    <p class="description"><?php _e('Branch stock is displayed on single product pages using the shortcode [erp_branch_stock] or automatically after the price.', 'erp-sync'); ?></p>
+                    
+                    <div style="background: #f9f9f9; padding: 15px; border: 1px solid #ddd; margin-top: 10px; max-width: 400px;">
+                        <div style="font-weight: 600; margin-bottom: 8px;"><?php _e('Availability by Branch', 'erp-sync'); ?></div>
+                        <ul style="list-style: none; margin: 0; padding: 0;">
+                            <?php 
+                            $preview_count = 0;
+                            foreach ( $detected_branches as $branch_name ) :
+                                $settings = $branch_settings[ $branch_name ] ?? [];
+                                if ( ! empty( $settings['excluded'] ) ) continue;
+                                if ( ++$preview_count > 3 ) break; // Show max 3 branches in preview
+                                $display_name = ! empty( $settings['alias'] ) ? $settings['alias'] : $branch_name;
+                            ?>
+                                <li style="display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #eee;">
+                                    <span style="font-weight: 500;"><?php echo esc_html( $display_name ); ?></span>
+                                    <span style="color: #666;"><strong>5</strong> <?php _e('in stock', 'erp-sync'); ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php endif; ?>
             </div>
 
             <!-- Diagnostics Tab (outside the main settings form - contains its own forms) -->

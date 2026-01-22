@@ -546,11 +546,15 @@ class API_Client {
                 continue;
             }
 
+            // Parse warehouses data if present
+            $warehouses = $this->parse_warehouses( $row['Warehouses'] ?? null );
+
             $stock_data[] = [
                 'VendorCode'  => $this->sanitize_string( $row['VendorCode'] ?? '' ),
                 'Quantity'    => $this->to_float( $row['Quantity'] ?? 0 ),
                 'Price'       => $this->to_float( $row['Price'] ?? 0 ),
                 'SalesPrice'  => $this->to_float( $row['SalesPrice'] ?? 0 ),
+                '_warehouses' => $warehouses,
             ];
         }
 
@@ -559,6 +563,55 @@ class API_Client {
         }
 
         return $stock_data;
+    }
+
+    /**
+     * Parse and normalize the Warehouses field from stock response.
+     *
+     * The Warehouses field may be:
+     * - null/missing: return empty array
+     * - a single object: wrap in array
+     * - an array of objects: use as-is
+     *
+     * @param mixed $warehouses Raw warehouses data from API.
+     * @return array Normalized array of warehouse data with Location and Quantity.
+     */
+    private function parse_warehouses( mixed $warehouses ): array {
+        if ( empty( $warehouses ) ) {
+            return [];
+        }
+
+        // Normalize: if single object (has Location key but no numeric keys), wrap in array
+        if ( is_array( $warehouses ) && isset( $warehouses['Location'] ) && ! isset( $warehouses[0] ) ) {
+            $warehouses = [ $warehouses ];
+        }
+
+        // If still not an array, return empty
+        if ( ! is_array( $warehouses ) ) {
+            return [];
+        }
+
+        $parsed = [];
+        foreach ( $warehouses as $wh ) {
+            if ( ! is_array( $wh ) ) {
+                continue;
+            }
+
+            $location = $this->sanitize_string( $wh['Location'] ?? '' );
+            $quantity = $this->to_float( $wh['Quantity'] ?? 0 );
+
+            // Skip entries without a location name
+            if ( empty( $location ) ) {
+                continue;
+            }
+
+            $parsed[] = [
+                'Location' => $location,
+                'Quantity' => $quantity,
+            ];
+        }
+
+        return $parsed;
     }
 
     /**

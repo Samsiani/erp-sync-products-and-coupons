@@ -487,10 +487,21 @@ class Product_Service {
     }
 
     /**
+     * Option key for storing detected branch names.
+     */
+    public const OPTION_DETECTED_BRANCHES = 'erp_sync_detected_branches';
+
+    /**
+     * Option key for storing branch settings (alias, excluded).
+     */
+    public const OPTION_BRANCH_SETTINGS = 'erp_sync_branch_settings';
+
+    /**
      * Synchronize a batch of product stock data.
      *
      * Updates stock quantities and prices for existing products.
      * Optimized for frequent execution - only updates stock-related fields.
+     * Also discovers and records unique branch/warehouse locations.
      *
      * @param array $rows Array of stock rows from IBS API.
      * @return array{updated: int, skipped: int, errors: int, total: int} Sync statistics.
@@ -503,6 +514,9 @@ class Product_Service {
             'total'   => count( $rows ),
         ];
 
+        // Collect unique branch locations for discovery
+        $discovered_locations = [];
+
         foreach ( $rows as $row ) {
             $sku = sanitize_text_field( trim( $row['VendorCode'] ?? '' ) );
 
@@ -510,6 +524,15 @@ class Product_Service {
             if ( empty( $sku ) ) {
                 $stats['errors']++;
                 continue;
+            }
+
+            // Collect branch locations from this row for discovery
+            $warehouses = $row['_warehouses'] ?? [];
+            foreach ( $warehouses as $wh ) {
+                $location = $wh['Location'] ?? '';
+                if ( ! empty( $location ) ) {
+                    $discovered_locations[ $location ] = true;
+                }
             }
 
             try {
@@ -550,21 +573,55 @@ class Product_Service {
             }
         }
 
+        // Update detected branches if we found any new ones
+        if ( ! empty( $discovered_locations ) ) {
+            $this->update_detected_branches( array_keys( $discovered_locations ) );
+        }
+
         // Log summary
         Logger::instance()->log( 'Stock batch sync completed', [
-            'updated' => $stats['updated'],
-            'skipped' => $stats['skipped'],
-            'errors'  => $stats['errors'],
-            'total'   => $stats['total'],
+            'updated'            => $stats['updated'],
+            'skipped'            => $stats['skipped'],
+            'errors'             => $stats['errors'],
+            'total'              => $stats['total'],
+            'branches_discovered'=> count( $discovered_locations ),
         ] );
 
         return $stats;
     }
 
     /**
+     * Update the global list of detected branch locations.
+     *
+     * Merges new locations into the existing list and saves if there are changes.
+     *
+     * @param array $new_locations Array of location names discovered in current sync.
+     */
+    private function update_detected_branches( array $new_locations ): void {
+        $existing = get_option( self::OPTION_DETECTED_BRANCHES, [] );
+        if ( ! is_array( $existing ) ) {
+            $existing = [];
+        }
+
+        $merged = array_unique( array_merge( $existing, $new_locations ) );
+        sort( $merged );
+
+        // Only update if there are changes
+        if ( $merged !== $existing ) {
+            update_option( self::OPTION_DETECTED_BRANCHES, $merged );
+            Logger::instance()->log( 'Detected branches updated', [
+                'previous_count' => count( $existing ),
+                'new_count'      => count( $merged ),
+                'new_branches'   => array_diff( $merged, $existing ),
+            ] );
+        }
+    }
+
+    /**
      * Set product stock and price data from IBS row.
      *
      * Performance-optimized: only updates stock-related meta.
+     * Also saves per-warehouse stock data for branch display.
      *
      * @param \WC_Product $product Product object.
      * @param array       $row     Stock data row from IBS API.
@@ -609,6 +666,10 @@ class Product_Service {
         } else {
             $product->set_stock_status( 'outofstock' );
         }
+
+        // Save per-warehouse stock data
+        $warehouses = $row['_warehouses'] ?? [];
+        $product->update_meta_data( '_erp_sync_warehouse_data', $warehouses );
 
         // Update sync timestamp
         $product->update_meta_data( '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
