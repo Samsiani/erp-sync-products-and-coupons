@@ -17,9 +17,15 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Product_Service {
 
     /**
-     * Attribute mapping from IBS data fields to WooCommerce taxonomy slugs.
+     * Option key for storing attribute mapping in database.
      */
-    private const ATTRIBUTE_MAPPING = [
+    public const OPTION_ATTRIBUTE_MAPPING = 'erp_sync_attribute_mapping';
+
+    /**
+     * Default attribute mapping from IBS data fields to WooCommerce taxonomy slugs.
+     * Used as fallback when user hasn't configured custom mappings.
+     */
+    private const DEFAULT_ATTRIBUTE_MAPPING = [
         'Brand'      => 'pa_brand',
         'Color'      => 'pa_color',
         'Size'       => 'pa_size',
@@ -27,19 +33,6 @@ class Product_Service {
         'Bracelet'   => 'pa_bracelet',
         'gender'     => 'pa_gender',
         'Bijouterie' => 'pa_bijouterie',
-    ];
-
-    /**
-     * Attribute labels for display purposes.
-     */
-    private const ATTRIBUTE_LABELS = [
-        'pa_brand'      => 'Brand',
-        'pa_color'      => 'Color',
-        'pa_size'       => 'Size',
-        'pa_mechanism'  => 'Mechanism',
-        'pa_bracelet'   => 'Bracelet',
-        'pa_gender'     => 'Gender',
-        'pa_bijouterie' => 'Bijouterie',
     ];
 
     /**
@@ -55,6 +48,64 @@ class Product_Service {
      * @var array<string, int>
      */
     private array $term_cache = [];
+
+    /**
+     * Cached attribute mapping (populated once per request).
+     *
+     * @var array<string, string>|null
+     */
+    private ?array $attribute_mapping_cache = null;
+
+    /**
+     * Retrieve the attribute mapping configuration.
+     *
+     * Merges default mapping with user-configured database settings.
+     * User settings take precedence over defaults.
+     *
+     * @return array<string, string> Mapping of 1C field names to WooCommerce taxonomy slugs.
+     */
+    public function get_attribute_mapping(): array {
+        // Return cached mapping if available
+        if ( $this->attribute_mapping_cache !== null ) {
+            return $this->attribute_mapping_cache;
+        }
+
+        // Get user-configured mapping from database
+        $db_mapping = get_option( self::OPTION_ATTRIBUTE_MAPPING, [] );
+
+        // Ensure it's an array
+        if ( ! is_array( $db_mapping ) ) {
+            $db_mapping = [];
+        }
+
+        // Merge defaults with database settings (database takes precedence)
+        $this->attribute_mapping_cache = array_merge( self::DEFAULT_ATTRIBUTE_MAPPING, $db_mapping );
+
+        return $this->attribute_mapping_cache;
+    }
+
+    /**
+     * Generate a display label from a taxonomy slug.
+     *
+     * Converts 'pa_some_attribute' to 'Some Attribute'.
+     *
+     * @param string $taxonomy_slug The taxonomy slug (e.g., 'pa_brand').
+     * @param string $field_name    The original field name from 1C data as fallback.
+     * @return string Human-readable label.
+     */
+    private function get_attribute_label( string $taxonomy_slug, string $field_name ): string {
+        // Remove 'pa_' prefix and convert to title case
+        $label = str_replace( 'pa_', '', $taxonomy_slug );
+        $label = str_replace( [ '_', '-' ], ' ', $label );
+        $label = ucwords( $label );
+
+        // If the result is empty, use the field name
+        if ( empty( trim( $label ) ) ) {
+            return ucfirst( $field_name );
+        }
+
+        return $label;
+    }
 
     /**
      * Ensure a product attribute exists and return the term data for assignment.
@@ -270,6 +321,9 @@ class Product_Service {
             'total'   => count( $rows ),
         ];
 
+        // Load attribute mapping once at the start of the batch
+        $attribute_mapping = $this->get_attribute_mapping();
+
         foreach ( $rows as $row ) {
             $sku = sanitize_text_field( trim( $row['VendorCode'] ?? '' ) );
 
@@ -374,13 +428,18 @@ class Product_Service {
     /**
      * Build WC_Product_Attribute array from IBS row data.
      *
+     * Uses dynamic attribute mapping from database settings.
+     *
      * @param array $row Product data row from IBS API.
      * @return \WC_Product_Attribute[] Array of product attributes.
      */
     private function build_product_attributes( array $row ): array {
         $attributes = [];
 
-        foreach ( self::ATTRIBUTE_MAPPING as $field_name => $taxonomy_slug ) {
+        // Get dynamic attribute mapping
+        $attribute_mapping = $this->get_attribute_mapping();
+
+        foreach ( $attribute_mapping as $field_name => $taxonomy_slug ) {
             $value = $row[ $field_name ] ?? '';
 
             // Skip empty values (Source of Truth: don't create empty attributes)
@@ -388,8 +447,8 @@ class Product_Service {
                 continue;
             }
 
-            // Get the attribute label
-            $label = self::ATTRIBUTE_LABELS[ $taxonomy_slug ] ?? $field_name;
+            // Generate label from taxonomy slug dynamically
+            $label = $this->get_attribute_label( $taxonomy_slug, $field_name );
 
             // Ensure the attribute term exists
             $term_data = $this->ensure_attribute( $taxonomy_slug, $label, (string) $value );
@@ -572,5 +631,6 @@ class Product_Service {
     public function clear_cache(): void {
         $this->attribute_taxonomy_cache = [];
         $this->term_cache = [];
+        $this->attribute_mapping_cache = null;
     }
 }
