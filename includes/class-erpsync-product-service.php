@@ -682,11 +682,22 @@ class Product_Service {
      * Performance-optimized: only updates stock-related meta.
      * Also saves per-warehouse stock data for branch display.
      * Assigns branch taxonomy terms efficiently by comparing target vs current.
+     * Logs changes to the audit log when values differ.
      *
      * @param \WC_Product $product Product object.
      * @param array       $row     Stock data row from IBS API.
      */
     private function set_product_stock_data( \WC_Product $product, array $row ): void {
+        // ========== CAPTURE OLD VALUES FOR COMPARISON ==========
+        $old_regular_price = $product->get_regular_price();
+        $old_sale_price    = $product->get_sale_price();
+        $old_stock_qty     = $product->get_stock_quantity();
+        $old_warehouses    = $product->get_meta( '_erp_sync_warehouse_data', true );
+        
+        if ( ! is_array( $old_warehouses ) ) {
+            $old_warehouses = [];
+        }
+
         // Parse price (supports European decimal format with comma)
         // Only set price if we have a valid non-empty value from the API
         $raw_price = $row['Price'] ?? null;
@@ -711,6 +722,7 @@ class Product_Service {
             // Remove sale price if empty, zero, or not lower than regular price
             // This ensures no stale discounts remain when ERP sends empty/zero
             $product->set_sale_price( '' );
+            $sale_price = 0.0; // For comparison purposes
         }
 
         // Parse quantity
@@ -736,6 +748,153 @@ class Product_Service {
 
         // Assign branch taxonomy terms (performance-optimized)
         $this->assign_branch_terms( $product, $warehouses );
+
+        // ========== LOG CHANGES TO AUDIT LOG ==========
+        $this->log_product_changes(
+            $product,
+            (float) $old_regular_price,
+            $regular_price,
+            (float) $old_sale_price,
+            $sale_price,
+            (int) $old_stock_qty,
+            $quantity,
+            $old_warehouses,
+            $warehouses
+        );
+    }
+
+    /**
+     * Log product changes to the audit log.
+     *
+     * Compares old and new values and creates a human-readable log entry
+     * when differences are detected.
+     *
+     * @param \WC_Product $product          The product being updated.
+     * @param float       $old_regular_price Old regular price.
+     * @param float       $new_regular_price New regular price.
+     * @param float       $old_sale_price   Old sale price.
+     * @param float       $new_sale_price   New sale price.
+     * @param int         $old_stock_qty    Old stock quantity.
+     * @param int         $new_stock_qty    New stock quantity.
+     * @param array       $old_warehouses   Old warehouse data.
+     * @param array       $new_warehouses   New warehouse data.
+     */
+    private function log_product_changes(
+        \WC_Product $product,
+        float $old_regular_price,
+        float $new_regular_price,
+        float $old_sale_price,
+        float $new_sale_price,
+        int $old_stock_qty,
+        int $new_stock_qty,
+        array $old_warehouses,
+        array $new_warehouses
+    ): void {
+        $changes = [];
+
+        // Compare Regular Price
+        // Note: Only log when new_regular_price > 0 because the code only updates
+        // prices when they are positive (to avoid overwriting valid prices with zero)
+        if ( abs( $old_regular_price - $new_regular_price ) > 0.001 && $new_regular_price > 0 ) {
+            $message = sprintf(
+                'Price: %s → %s',
+                $old_regular_price > 0 ? number_format( $old_regular_price, 2 ) : '0',
+                number_format( $new_regular_price, 2 )
+            );
+            Audit_Logger::log_change(
+                $product,
+                'price',
+                $old_regular_price,
+                $new_regular_price,
+                $message
+            );
+            $changes[] = $message;
+        }
+
+        // Compare Sale Price
+        if ( abs( $old_sale_price - $new_sale_price ) > 0.001 ) {
+            $old_display = $old_sale_price > 0 ? number_format( $old_sale_price, 2 ) : 'none';
+            $new_display = $new_sale_price > 0 ? number_format( $new_sale_price, 2 ) : 'none';
+            $message = sprintf( 'Sale Price: %s → %s', $old_display, $new_display );
+            Audit_Logger::log_change(
+                $product,
+                'sale_price',
+                $old_sale_price,
+                $new_sale_price,
+                $message
+            );
+            $changes[] = $message;
+        }
+
+        // Compare Stock Quantity
+        if ( $old_stock_qty !== $new_stock_qty ) {
+            // Build branch-level change details
+            $branch_changes = $this->calculate_branch_stock_diff( $old_warehouses, $new_warehouses );
+            
+            $message = sprintf( 'Stock: %d → %d', $old_stock_qty, $new_stock_qty );
+            
+            if ( ! empty( $branch_changes ) ) {
+                $message .= ' (' . implode( ', ', $branch_changes ) . ')';
+            }
+
+            Audit_Logger::log_change(
+                $product,
+                'stock',
+                $old_stock_qty,
+                $new_stock_qty,
+                $message
+            );
+        }
+    }
+
+    /**
+     * Calculate per-branch stock differences.
+     *
+     * Compares old and new warehouse data to generate human-readable
+     * branch-level stock change descriptions.
+     *
+     * @param array $old_warehouses Old warehouse data.
+     * @param array $new_warehouses New warehouse data.
+     * @return array Array of formatted branch change strings.
+     */
+    private function calculate_branch_stock_diff( array $old_warehouses, array $new_warehouses ): array {
+        $branch_changes = [];
+
+        // Build lookup maps by location
+        $old_by_location = [];
+        foreach ( $old_warehouses as $wh ) {
+            $location = $wh['Location'] ?? '';
+            if ( ! empty( $location ) ) {
+                $old_by_location[ $location ] = (int) ( $wh['Quantity'] ?? 0 );
+            }
+        }
+
+        $new_by_location = [];
+        foreach ( $new_warehouses as $wh ) {
+            $location = $wh['Location'] ?? '';
+            if ( ! empty( $location ) ) {
+                $new_by_location[ $location ] = (int) ( $wh['Quantity'] ?? 0 );
+            }
+        }
+
+        // Find all unique locations
+        $all_locations = array_unique( array_merge(
+            array_keys( $old_by_location ),
+            array_keys( $new_by_location )
+        ) );
+
+        foreach ( $all_locations as $location ) {
+            $old_qty = $old_by_location[ $location ] ?? 0;
+            $new_qty = $new_by_location[ $location ] ?? 0;
+
+            if ( $old_qty !== $new_qty ) {
+                $diff = $new_qty - $old_qty;
+                $sign = $diff > 0 ? '+' : '';
+                $branch_changes[] = sprintf( '%s: %d→%d', $location, $old_qty, $new_qty );
+            }
+        }
+
+        return $branch_changes;
     }
 
     /**

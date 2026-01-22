@@ -142,6 +142,7 @@ add_action( 'plugins_loaded', 'erp_sync_load_textdomain' );
 require_once ERPSYNC_DIR . 'includes/class-erpsync-logger.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-security.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-api-client.php';
+require_once ERPSYNC_DIR . 'includes/class-erpsync-audit-logger.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-product-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-sync-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-webhook.php';
@@ -214,8 +215,46 @@ function erp_sync_activate(): void {
     if ( class_exists( '\ERPSync\Security' ) ) {
         \ERPSync\Security::create_tables();
     }
+    
+    // Create product logs table
+    erp_sync_create_log_table();
 }
 register_activation_hook( __FILE__, 'erp_sync_activate' );
+
+/**
+ * Create the product logs table for audit logging.
+ * 
+ * Table stores product change history (stock, price changes) from ERP sync.
+ */
+function erp_sync_create_log_table(): void {
+    global $wpdb;
+    
+    $table_name      = $wpdb->prefix . 'erp_sync_product_logs';
+    $charset_collate = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+        id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        product_id bigint(20) UNSIGNED NOT NULL,
+        vendor_code varchar(100) NOT NULL DEFAULT '',
+        product_name varchar(255) NOT NULL DEFAULT '',
+        change_type varchar(50) NOT NULL DEFAULT '',
+        old_value text,
+        new_value text,
+        message text,
+        created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY  (id),
+        KEY product_id (product_id),
+        KEY vendor_code (vendor_code),
+        KEY created_at (created_at)
+    ) $charset_collate;";
+
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    dbDelta( $sql );
+    
+    if ( class_exists( '\ERPSync\Logger' ) ) {
+        \ERPSync\Logger::instance()->log( 'Product logs table created/verified', [] );
+    }
+}
 
 function erp_sync_deactivate(): void {
     if ( class_exists( '\ERPSync\Cron' ) ) {
@@ -239,7 +278,7 @@ add_filter( 'plugin_action_links_' . ERPSYNC_BASENAME, 'erp_sync_plugin_row_meta
  * Enqueue admin assets
  */
 function erp_sync_enqueue_admin_assets( string $hook ): void {
-    if ( strpos( $hook, 'erp-sync-settings' ) === false && $hook !== 'edit.php' ) {
+    if ( strpos( $hook, 'erp-sync-settings' ) === false && strpos( $hook, 'erp-sync-logs' ) === false && $hook !== 'edit.php' ) {
         return;
     }
     wp_enqueue_style( 'erp-sync-admin', ERPSYNC_URL . 'assets/admin.css', [], ERPSYNC_VERSION );

@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Admin {
 
     const MENU_SLUG = 'erp-sync-settings';
+    const LOGS_MENU_SLUG = 'erp-sync-logs';
 
     public static function init(): void {
         add_action( 'admin_menu', [ __CLASS__, 'menu' ] );
@@ -57,6 +58,46 @@ class Admin {
             self::MENU_SLUG,
             [ __CLASS__, 'render_page' ]
         );
+
+        add_submenu_page(
+            'woocommerce',
+            __( 'Product Logs', 'erp-sync' ),
+            __( 'Product Logs', 'erp-sync' ),
+            'manage_woocommerce',
+            self::LOGS_MENU_SLUG,
+            [ __CLASS__, 'render_logs_page' ]
+        );
+    }
+
+    /**
+     * Render the Product Logs admin page.
+     */
+    public static function render_logs_page(): void {
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( esc_html__( 'You do not have sufficient permissions to access this page.', 'erp-sync' ) );
+        }
+
+        // Include the List Table class if not already loaded
+        if ( ! class_exists( '\ERPSync\Logs_List_Table' ) ) {
+            require_once ERPSYNC_DIR . 'includes/class-erpsync-logs-list-table.php';
+        }
+
+        $logs_table = new Logs_List_Table();
+        $logs_table->prepare_items();
+
+        ?>
+        <div class="wrap">
+            <h1><?php echo esc_html__( 'Product Logs', 'erp-sync' ); ?></h1>
+            <p class="description">
+                <?php echo esc_html__( 'History of product changes (stock, price) synced from the ERP system.', 'erp-sync' ); ?>
+            </p>
+            
+            <form method="get">
+                <input type="hidden" name="page" value="<?php echo esc_attr( self::LOGS_MENU_SLUG ); ?>" />
+                <?php $logs_table->display(); ?>
+            </form>
+        </div>
+        <?php
     }
 
     public static function handle_save_settings(): void {
