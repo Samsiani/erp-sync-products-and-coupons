@@ -177,6 +177,11 @@ function erp_sync_bootstrap(): void {
         \ERPSync\Product_Service::init();
     }
 
+    // Initialize Sync Service (registers Action Scheduler hooks)
+    if ( class_exists( '\ERPSync\Sync_Service' ) ) {
+        \ERPSync\Sync_Service::init();
+    }
+
     // Initialize Webhook
     if ( class_exists( '\ERPSync\Webhook' ) ) {
         \ERPSync\Webhook::init();
