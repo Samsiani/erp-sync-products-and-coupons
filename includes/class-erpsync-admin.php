@@ -117,6 +117,18 @@ class Admin {
         $webhook_events = isset( $_POST['webhook_events'] ) ? array_map( 'sanitize_text_field', (array) $_POST['webhook_events'] ) : [];
         update_option( Webhook::OPTION_WEBHOOK_EVENTS, $webhook_events );
 
+        // Attribute Mapping Settings
+        $attribute_mapping = [
+            'Brand'      => sanitize_text_field( $_POST['attr_mapping_brand'] ?? 'pa_brand' ),
+            'Color'      => sanitize_text_field( $_POST['attr_mapping_color'] ?? 'pa_color' ),
+            'Size'       => sanitize_text_field( $_POST['attr_mapping_size'] ?? 'pa_size' ),
+            'Mechanism'  => sanitize_text_field( $_POST['attr_mapping_mechanism'] ?? 'pa_mechanism' ),
+            'Bracelet'   => sanitize_text_field( $_POST['attr_mapping_bracelet'] ?? 'pa_bracelet' ),
+            'gender'     => sanitize_text_field( $_POST['attr_mapping_gender'] ?? 'pa_gender' ),
+            'Bijouterie' => sanitize_text_field( $_POST['attr_mapping_bijouterie'] ?? 'pa_bijouterie' ),
+        ];
+        update_option( Product_Service::OPTION_ATTRIBUTE_MAPPING, $attribute_mapping );
+
         if ( class_exists( '\ERPSync\Cron' ) ) {
             Cron::reschedule_after_settings_change();
         }
@@ -599,6 +611,16 @@ class Admin {
         $stock_cron_next     = class_exists('\ERPSync\Cron') ? Cron::next_stock_run_human() : '—';
         $stock_cron_last_res = get_option( Cron::OPTION_STOCK_CRON_LAST_RESULT, [] );
 
+        // Attribute Mapping
+        $attribute_mapping = get_option( Product_Service::OPTION_ATTRIBUTE_MAPPING, [] );
+        $attr_mapping_brand      = $attribute_mapping['Brand']      ?? 'pa_brand';
+        $attr_mapping_color      = $attribute_mapping['Color']      ?? 'pa_color';
+        $attr_mapping_size       = $attribute_mapping['Size']       ?? 'pa_size';
+        $attr_mapping_mechanism  = $attribute_mapping['Mechanism']  ?? 'pa_mechanism';
+        $attr_mapping_bracelet   = $attribute_mapping['Bracelet']   ?? 'pa_bracelet';
+        $attr_mapping_gender     = $attribute_mapping['gender']     ?? 'pa_gender';
+        $attr_mapping_bijouterie = $attribute_mapping['Bijouterie'] ?? 'pa_bijouterie';
+
         ?>
         <div class="wrap erp-sync-admin-wrap">
             <h1><?php esc_html_e( 'ERP Sync Products and Coupons', 'erp-sync' ); ?> <span class="erp-sync-version">v<?php echo esc_html( ERPSYNC_VERSION ); ?></span></h1>
@@ -750,6 +772,60 @@ class Admin {
                                     }
                                     ?>
                                 </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <h2><?php _e( 'Attribute Mapping', 'erp-sync' ); ?></h2>
+                    <p class="description"><?php _e('Configure how ERP source fields map to WooCommerce product attributes. Values should be WooCommerce attribute taxonomy slugs (e.g., starting with <code>pa_</code>).', 'erp-sync'); ?></p>
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="attr_mapping_brand"><?php _e('Brand','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_brand" name="attr_mapping_brand" value="<?php echo esc_attr( $attr_mapping_brand ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_brand</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_color"><?php _e('Color','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_color" name="attr_mapping_color" value="<?php echo esc_attr( $attr_mapping_color ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_color</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_size"><?php _e('Size','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_size" name="attr_mapping_size" value="<?php echo esc_attr( $attr_mapping_size ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_size</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_mechanism"><?php _e('Mechanism','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_mechanism" name="attr_mapping_mechanism" value="<?php echo esc_attr( $attr_mapping_mechanism ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_mechanism</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_bracelet"><?php _e('Bracelet','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_bracelet" name="attr_mapping_bracelet" value="<?php echo esc_attr( $attr_mapping_bracelet ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_bracelet</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_gender"><?php _e('Gender','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_gender" name="attr_mapping_gender" value="<?php echo esc_attr( $attr_mapping_gender ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_gender</code>', 'erp-sync'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="attr_mapping_bijouterie"><?php _e('Bijouterie','erp-sync'); ?></label></th>
+                            <td>
+                                <input type="text" class="regular-text" id="attr_mapping_bijouterie" name="attr_mapping_bijouterie" value="<?php echo esc_attr( $attr_mapping_bijouterie ); ?>">
+                                <p class="description"><?php _e('Default: <code>pa_bijouterie</code>', 'erp-sync'); ?></p>
                             </td>
                         </tr>
                     </table>
