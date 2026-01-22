@@ -148,6 +148,7 @@ require_once ERPSYNC_DIR . 'includes/class-erpsync-webhook.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-coupon-dynamic.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-admin.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-cron.php';
+require_once ERPSYNC_DIR . 'includes/class-erpsync-frontend.php';
 require_once ERPSYNC_DIR . 'includes/functions-helpers.php';
 
 /**
@@ -178,6 +179,11 @@ function erp_sync_bootstrap(): void {
     // Initialize Coupon Dynamic
     if ( class_exists( '\ERPSync\Coupon_Dynamic' ) ) {
         \ERPSync\Coupon_Dynamic::init();
+    }
+
+    // Initialize Frontend (branch stock display)
+    if ( class_exists( '\ERPSync\Frontend' ) ) {
+        \ERPSync\Frontend::init();
     }
 
     // Initialize Admin UI and Cron
