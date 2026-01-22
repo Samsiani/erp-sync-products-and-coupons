@@ -963,7 +963,7 @@ class Admin {
                     </table>
                 </div>
 
-                <!-- Save Button (visible on settings/webhooks/security tabs) -->
+                <!-- Save Button (saves Settings, Webhooks, and Security tab configurations) -->
                 <p class="submit erp-sync-settings-submit">
                     <?php submit_button( __( 'Save All Settings', 'erp-sync' ), 'primary', 'submit', false ); ?>
                 </p>
