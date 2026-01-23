@@ -185,9 +185,13 @@
             const productId = $button.data('id');
             const originalText = $button.text();
             
-            // Disable button and show loading state
+            // Store original width to prevent layout jump
+            const originalWidth = $button.outerWidth();
+            $button.css('min-width', originalWidth + 'px');
+            
+            // Disable button and show loading state with custom spinner
             $button.prop('disabled', true).addClass('updating-message');
-            $button.html('<span class="spinner is-active" style="float:none;margin:0 5px 0 0;"></span>' + originalText);
+            $button.html(originalText + ' <span class="erp-sync-loading"></span>');
             
             $.ajax({
                 url: erpSyncAdmin.ajaxurl,
@@ -201,25 +205,29 @@
                     if (response.success) {
                         // Show success state
                         $button.removeClass('updating-message').addClass('button-primary');
-                        $button.html('✅ ' + (response.data.message || 'Done'));
+                        $button.html('Updated! ✅');
                         
-                        // Reset after 3 seconds
+                        // Reset after 2 seconds
                         setTimeout(function() {
                             $button.removeClass('button-primary').prop('disabled', false);
                             $button.text(originalText);
-                        }, 3000);
+                            $button.css('min-width', '');
+                        }, 2000);
                     } else {
-                        // Show error
+                        // Show error - revert immediately
                         $button.removeClass('updating-message');
                         $button.prop('disabled', false);
                         $button.text(originalText);
+                        $button.css('min-width', '');
                         alert('Error: ' + (response.data.message || 'Unknown error'));
                     }
                 },
                 error: function(xhr, status, error) {
+                    // Show error - revert immediately
                     $button.removeClass('updating-message');
                     $button.prop('disabled', false);
                     $button.text(originalText);
+                    $button.css('min-width', '');
                     alert('AJAX Error: ' + error);
                 }
             });
