@@ -283,9 +283,18 @@ add_filter( 'plugin_action_links_' . ERPSYNC_BASENAME, 'erp_sync_plugin_row_meta
  * Enqueue admin assets
  */
 function erp_sync_enqueue_admin_assets( string $hook ): void {
-    if ( strpos( $hook, 'erp-sync-settings' ) === false && strpos( $hook, 'erp-sync-logs' ) === false && $hook !== 'edit.php' ) {
+    // Get the current post type for edit.php pages
+    $post_type = isset( $_GET['post_type'] ) ? sanitize_text_field( $_GET['post_type'] ) : '';
+    
+    // Determine if we should load assets
+    $is_erp_sync_page = strpos( $hook, 'erp-sync-settings' ) !== false || strpos( $hook, 'erp-sync-logs' ) !== false;
+    $is_coupon_list = $hook === 'edit.php' && $post_type === 'shop_coupon';
+    $is_product_list = $hook === 'edit.php' && $post_type === 'product';
+    
+    if ( ! $is_erp_sync_page && ! $is_coupon_list && ! $is_product_list ) {
         return;
     }
+    
     wp_enqueue_style( 'erp-sync-admin', ERPSYNC_URL . 'assets/admin.css', [], ERPSYNC_VERSION );
     wp_enqueue_script( 'erp-sync-admin', ERPSYNC_URL . 'assets/admin.js', [ 'jquery' ], ERPSYNC_VERSION, true );
     wp_localize_script( 'erp-sync-admin', 'erpSyncAdmin', [

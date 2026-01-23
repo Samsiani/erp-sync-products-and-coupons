@@ -517,6 +517,77 @@ class Sync_Service {
     }
 
     /**
+     * Sync a single product's stock and price from the ERP.
+     *
+     * This performs a synchronous, immediate update for a single product
+     * to give instant feedback to the admin.
+     *
+     * @param int $product_id The WooCommerce product ID.
+     * @return bool True on success, false on failure.
+     * @throws \Exception If the product has no SKU or API call fails.
+     */
+    public function sync_single_product( int $product_id ): bool {
+        $product = wc_get_product( $product_id );
+
+        if ( ! $product ) {
+            throw new \Exception( __( 'Product not found', 'erp-sync' ) );
+        }
+
+        $sku = $product->get_sku();
+
+        if ( empty( $sku ) ) {
+            throw new \Exception( __( 'No SKU found for this product', 'erp-sync' ) );
+        }
+
+        Logger::instance()->log( 'Starting single product sync', [
+            'product_id' => $product_id,
+            'sku'        => $sku,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        try {
+            // Fetch stock data for this specific SKU
+            $rows = $this->api->fetch_products_stock( $sku );
+
+            if ( empty( $rows ) ) {
+                Logger::instance()->log( 'Single product sync: No data returned from API', [
+                    'product_id' => $product_id,
+                    'sku'        => $sku,
+                ] );
+                throw new \Exception( __( 'No data returned from ERP for this SKU', 'erp-sync' ) );
+            }
+
+            // Generate a unique session ID for this single sync
+            $session_id = uniqid( 'single_', true );
+
+            // Process the stock data using the existing batch method
+            // This handles warehouse exclusion logic correctly
+            $stats = $this->product_service->sync_stock_batch( $rows, $session_id );
+
+            Logger::instance()->log( 'Single product sync completed', [
+                'product_id' => $product_id,
+                'sku'        => $sku,
+                'updated'    => $stats['updated'],
+                'skipped'    => $stats['skipped'],
+                'errors'     => $stats['errors'],
+                'user'       => wp_get_current_user()->user_login ?? 'system',
+            ] );
+
+            // Return true only if no errors occurred (product may have been skipped if not found in API data)
+            return $stats['errors'] === 0;
+
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Single product sync failed', [
+                'product_id' => $product_id,
+                'sku'        => $sku,
+                'error'      => $e->getMessage(),
+                'user'       => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw $e;
+        }
+    }
+
+    /**
      * Cleanup orphaned products (called by Action Scheduler).
      *
      * Sets stock to 0 for products that were not touched during the sync session.
