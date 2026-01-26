@@ -283,13 +283,18 @@ add_filter( 'plugin_action_links_' . ERPSYNC_BASENAME, 'erp_sync_plugin_row_meta
  * Enqueue admin assets
  */
 function erp_sync_enqueue_admin_assets( string $hook ): void {
-    // Get the current post type for edit.php pages
-    $post_type = isset( $_GET['post_type'] ) ? sanitize_text_field( $_GET['post_type'] ) : '';
-    
-    // Determine if we should load assets
+    // Determine if we should load assets on plugin pages
     $is_erp_sync_page = strpos( $hook, 'erp-sync-settings' ) !== false || strpos( $hook, 'erp-sync-logs' ) !== false;
-    $is_coupon_list = $hook === 'edit.php' && $post_type === 'shop_coupon';
-    $is_product_list = $hook === 'edit.php' && $post_type === 'product';
+    
+    // Use get_current_screen() for robust detection of product/coupon list pages
+    $screen = get_current_screen();
+    $is_coupon_list  = false;
+    $is_product_list = false;
+    
+    if ( $screen ) {
+        $is_coupon_list  = $screen->id === 'edit-shop_coupon' || $screen->post_type === 'shop_coupon';
+        $is_product_list = $screen->id === 'edit-product' || $screen->post_type === 'product';
+    }
     
     if ( ! $is_erp_sync_page && ! $is_coupon_list && ! $is_product_list ) {
         return;
