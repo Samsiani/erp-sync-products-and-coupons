@@ -341,9 +341,14 @@ class Sync_Service {
                 $this->clear_memory_caches();
             }
 
-            // Immediately run orphan cleanup synchronously
-            $this->set_progress( $total, $total, 'Running orphan cleanup...' );
-            $orphan_count = $this->cleanup_orphans_sync( $session_id );
+            // Immediately run orphan cleanup synchronously (only if we received data)
+            $orphan_count = 0;
+            if ( $total > 0 ) {
+                $this->set_progress( $total, $total, 'Running orphan cleanup...' );
+                $orphan_count = $this->cleanup_orphans_sync( $session_id );
+            } else {
+                Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id ] );
+            }
 
             // Update last sync time
             update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
@@ -500,8 +505,13 @@ class Sync_Service {
             $orphan_count = 0;
             if ( empty( $vendor_codes ) ) {
                 // Only run orphan cleanup for full syncs (not partial SKU syncs)
-                $this->set_progress( $total, $total, 'Running orphan cleanup...' );
-                $orphan_count = $this->cleanup_orphans_sync( $session_id );
+                // Safety Stop: Only proceed if we received data from the API
+                if ( $total > 0 ) {
+                    $this->set_progress( $total, $total, 'Running orphan cleanup...' );
+                    $orphan_count = $this->cleanup_orphans_sync( $session_id );
+                } else {
+                    Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id ] );
+                }
             }
 
             // Update last sync time
