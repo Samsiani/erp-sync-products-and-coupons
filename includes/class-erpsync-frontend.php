@@ -84,9 +84,6 @@ class Frontend {
             .erp-sync-branch-qty {
                 color: #666;
             }
-            .erp-sync-branch-qty-value {
-                font-weight: 600;
-            }
         ';
     }
 
@@ -208,8 +205,13 @@ class Frontend {
                     <li class="erp-sync-branch-stock-item">
                         <span class="erp-sync-branch-name"><?php echo esc_html( $item['name'] ); ?></span>
                         <span class="erp-sync-branch-qty">
-                            <span class="erp-sync-branch-qty-value"><?php echo esc_html( $item['quantity'] ); ?></span>
-                            <?php esc_html_e( 'in stock', 'erp-sync' ); ?>
+                            <?php
+                            if ( (int) $item['quantity'] === 1 ) {
+                                esc_html_e( 'Last one', 'erp-sync' );
+                            } else {
+                                esc_html_e( 'in stock', 'erp-sync' );
+                            }
+                            ?>
                         </span>
                     </li>
                 <?php endforeach; ?>
