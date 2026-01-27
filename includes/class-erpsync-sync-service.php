@@ -266,14 +266,27 @@ class Sync_Service {
     /**
      * Import products catalog from IBS/1C API.
      *
-     * Fetches product catalog data and schedules batch processing via Action Scheduler.
+     * Fetches product catalog data and processes it synchronously in batches.
      * Creates new products or updates existing ones based on VendorCode (SKU).
+     * After processing, immediately runs orphan cleanup to set missing products to out-of-stock.
      *
-     * @return array{scheduled: int, total: int, session_id: string} Schedule statistics.
+     * @return array{processed: int, total: int, session_id: string, created: int, updated: int, errors: int, orphans_zeroed: int} Sync statistics.
      * @throws \Throwable If API call fails.
      */
     public function import_products_catalog(): array {
-        Logger::instance()->log( 'Starting products catalog import (batch mode)', [
+        // Close PHP session early to allow concurrent AJAX requests (progress polling)
+        // This is critical to enable the progress bar to work while this long process executes
+        if ( session_status() === PHP_SESSION_ACTIVE ) {
+            session_write_close();
+        }
+
+        // Prevent timeouts during large syncs
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @set_time_limit( 0 );
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @ignore_user_abort( true );
+
+        Logger::instance()->log( 'Starting products catalog import (synchronous mode)', [
             'user' => wp_get_current_user()->user_login ?? 'system',
         ] );
 
@@ -292,58 +305,70 @@ class Sync_Service {
             $rows = $this->api->fetch_products_catalog();
             $total = count( $rows );
 
-            $this->set_progress( 0, $total, 'Scheduling catalog batches...' );
+            $this->set_progress( 0, $total, 'Processing catalog batches...' );
 
             // Split data into chunks of BATCH_SIZE items
             $chunks = array_chunk( $rows, self::BATCH_SIZE );
-            $scheduled_batches = 0;
+            $processed_batches = 0;
 
-            // Schedule each chunk as a background action
+            // Aggregate statistics across all batches
+            $aggregate_stats = [
+                'created' => 0,
+                'updated' => 0,
+                'errors'  => 0,
+            ];
+
+            // Process each chunk synchronously
             foreach ( $chunks as $index => $chunk ) {
-                if ( function_exists( 'as_schedule_single_action' ) ) {
-                    as_schedule_single_action(
-                        time() + ( $index * 5 ), // Stagger batches by 5 seconds
-                        self::HOOK_PROCESS_CATALOG_BATCH,
-                        [ $chunk, $session_id ],
-                        'erp-sync'
-                    );
-                    $scheduled_batches++;
-                } else {
-                    // Fallback: process synchronously if Action Scheduler not available
-                    $this->product_service->sync_catalog_batch( $chunk, $session_id );
-                }
+                $batch_stats = $this->product_service->sync_catalog_batch( $chunk, $session_id );
 
-                $this->set_progress( $index + 1, count( $chunks ), sprintf( 'Scheduled batch %d of %d', $index + 1, count( $chunks ) ) );
-            }
+                // Aggregate stats
+                $aggregate_stats['created'] += $batch_stats['created'];
+                $aggregate_stats['updated'] += $batch_stats['updated'];
+                $aggregate_stats['errors']  += $batch_stats['errors'];
 
-            // Schedule orphan cleanup after delay
-            if ( function_exists( 'as_schedule_single_action' ) ) {
-                as_schedule_single_action(
-                    time() + self::ORPHAN_CLEANUP_DELAY,
-                    self::HOOK_CLEANUP_ORPHANS,
-                    [ $session_id ],
-                    'erp-sync'
+                $processed_batches++;
+
+                $this->set_progress(
+                    ( $index + 1 ) * self::BATCH_SIZE,
+                    $total,
+                    sprintf( 'Processed batch %d of %d', $index + 1, count( $chunks ) )
                 );
+
+                // Memory management: clear caches after each batch to prevent memory exhaustion
+                $this->product_service->clear_cache();
+                $this->clear_memory_caches();
             }
+
+            // Immediately run orphan cleanup synchronously
+            $this->set_progress( $total, $total, 'Running orphan cleanup...' );
+            $orphan_count = $this->cleanup_orphans_sync( $session_id );
 
             // Update last sync time
             update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
 
-            Logger::instance()->log( 'Products catalog import batches scheduled', [
+            Logger::instance()->log( 'Products catalog import completed (synchronous)', [
                 'session_id'        => $session_id,
                 'total_items'       => $total,
                 'batch_size'        => self::BATCH_SIZE,
-                'scheduled_batches' => $scheduled_batches,
-                'cleanup_delay'     => self::ORPHAN_CLEANUP_DELAY,
+                'processed_batches' => $processed_batches,
+                'created'           => $aggregate_stats['created'],
+                'updated'           => $aggregate_stats['updated'],
+                'errors'            => $aggregate_stats['errors'],
+                'orphans_zeroed'    => $orphan_count,
                 'user'              => wp_get_current_user()->user_login ?? 'system',
             ] );
 
             $this->clear_progress();
 
             return [
-                'scheduled'  => $scheduled_batches,
-                'total'      => $total,
-                'session_id' => $session_id,
+                'processed'      => $processed_batches,
+                'total'          => $total,
+                'session_id'     => $session_id,
+                'created'        => $aggregate_stats['created'],
+                'updated'        => $aggregate_stats['updated'],
+                'errors'         => $aggregate_stats['errors'],
+                'orphans_zeroed' => $orphan_count,
             ];
 
         } catch ( \Throwable $e ) {
@@ -402,6 +427,12 @@ class Sync_Service {
      * @throws \Throwable If API call fails.
      */
     public function update_products_stock( string $vendor_codes = '' ): array {
+        // Close PHP session early to allow concurrent AJAX requests (progress polling)
+        // This is critical to enable the progress bar to work while this long process executes
+        if ( session_status() === PHP_SESSION_ACTIVE ) {
+            session_write_close();
+        }
+
         // Prevent timeouts during large syncs
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         @set_time_limit( 0 );
@@ -645,12 +676,35 @@ class Sync_Service {
             // Fetch stock data for this specific SKU
             $rows = $this->api->fetch_products_stock( $sku );
 
+            // If API returns empty result, treat it as product being out of stock
+            // This is the expected behavior when a product is no longer in the ERP
             if ( empty( $rows ) ) {
-                Logger::instance()->log( 'Single product sync: No data returned from API', [
+                Logger::instance()->log( 'SKU not found in ERP during single update. Stock set to 0.', [
                     'product_id' => $product_id,
                     'sku'        => $sku,
                 ] );
-                throw new \Exception( __( 'No data returned from ERP for this SKU', 'erp-sync' ) );
+
+                // Set product stock to 0 and mark as out of stock
+                $old_stock = $product->get_stock_quantity();
+                $product->set_manage_stock( true );
+                $product->set_stock_quantity( 0 );
+                $product->set_stock_status( 'outofstock' );
+                $product->update_meta_data( '_erp_sync_last_update', current_time( 'mysql' ) );
+                $product->update_meta_data( '_erp_sync_zeroed_reason', 'not_found_in_erp' );
+                $product->save();
+
+                // Log the stock change for audit
+                if ( class_exists( '\ERPSync\Audit_Logger' ) ) {
+                    Audit_Logger::log_change(
+                        $product,
+                        'single_sync_not_found',
+                        $old_stock,
+                        0,
+                        sprintf( 'SKU %s not found in ERP during single update. Stock set to 0.', $sku )
+                    );
+                }
+
+                return true;
             }
 
             // Generate a unique session ID for this single sync

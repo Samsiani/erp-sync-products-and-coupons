@@ -43,6 +43,8 @@ class Admin {
         add_action( 'wp_ajax_erp_sync_sync_progress', [ __CLASS__, 'ajax_sync_progress' ] );
         add_action( 'wp_ajax_erp_sync_quick_edit_coupon', [ __CLASS__, 'ajax_quick_edit_coupon' ] );
         add_action( 'wp_ajax_erp_sync_single_update', [ __CLASS__, 'ajax_single_update' ] );
+        add_action( 'wp_ajax_erp_sync_stock', [ __CLASS__, 'ajax_sync_stock' ] );
+        add_action( 'wp_ajax_erp_sync_catalog', [ __CLASS__, 'ajax_sync_catalog' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
@@ -284,7 +286,9 @@ class Admin {
         check_admin_referer( 'erp_sync_save_branches' );
         if ( ! current_user_can( 'manage_woocommerce' ) ) wp_die( 'No permission' );
 
-        $branches_input = $_POST['branches'] ?? [];
+        // Apply wp_unslash to handle WordPress magic quotes that cause key mismatches
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+        $branches_input = isset( $_POST['branches'] ) ? wp_unslash( $_POST['branches'] ) : [];
         $branch_settings = [];
 
         if ( is_array( $branches_input ) ) {
@@ -548,6 +552,64 @@ class Admin {
         }
 
         wp_send_json_success( [ 'message' => 'Updated successfully' ] );
+    }
+
+    /**
+     * AJAX handler for stock sync.
+     * Runs synchronous stock update and returns JSON response.
+     */
+    public static function ajax_sync_stock(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->update_products_stock();
+
+            wp_send_json_success( [
+                'message'        => __( 'Stock sync completed successfully', 'erp-sync' ),
+                'updated'        => $result['updated'] ?? 0,
+                'skipped'        => $result['skipped'] ?? 0,
+                'errors'         => $result['errors'] ?? 0,
+                'total'          => $result['total'] ?? 0,
+                'orphans_zeroed' => $result['orphans_zeroed'] ?? 0,
+            ] );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'AJAX stock sync failed', [ 'error' => $e->getMessage() ] );
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
+    /**
+     * AJAX handler for catalog sync.
+     * Runs synchronous catalog import and returns JSON response.
+     */
+    public static function ajax_sync_catalog(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->import_products_catalog();
+
+            wp_send_json_success( [
+                'message'        => __( 'Catalog sync completed successfully', 'erp-sync' ),
+                'created'        => $result['created'] ?? 0,
+                'updated'        => $result['updated'] ?? 0,
+                'errors'         => $result['errors'] ?? 0,
+                'total'          => $result['total'] ?? 0,
+                'orphans_zeroed' => $result['orphans_zeroed'] ?? 0,
+            ] );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'AJAX catalog sync failed', [ 'error' => $e->getMessage() ] );
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
     }
 
     private static function render_notices(): void {
@@ -1065,19 +1127,19 @@ class Admin {
                 <p class="description"><?php _e('Synchronize WooCommerce products with the ERP system.', 'erp-sync'); ?></p>
                 
                 <div class="erp-sync-action-buttons">
-                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                        <input type="hidden" name="action" value="erp_sync_import_products_catalog">
-                        <?php submit_button( __('Sync Products Catalog','erp-sync'), 'primary', 'submit', false ); ?>
+                    <div style="display:inline-block; margin-right: 20px;">
+                        <button type="button" class="button button-primary erp-sync-ajax-btn" data-action="erp_sync_catalog" id="btn-sync-catalog">
+                            <?php _e('Sync Products Catalog','erp-sync'); ?>
+                        </button>
                         <p class="description"><?php _e('Updates names, attributes, and creates new products. Run once daily.', 'erp-sync'); ?></p>
-                    </form>
+                    </div>
 
-                    <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
-                        <?php wp_nonce_field( 'erp_sync_actions' ); ?>
-                        <input type="hidden" name="action" value="erp_sync_update_products_stock">
-                        <?php submit_button( __('Sync Stock & Prices','erp-sync'), 'primary', 'submit', false ); ?>
+                    <div style="display:inline-block;">
+                        <button type="button" class="button button-primary erp-sync-ajax-btn" data-action="erp_sync_stock" id="btn-sync-stock">
+                            <?php _e('Sync Stock & Prices','erp-sync'); ?>
+                        </button>
                         <p class="description"><?php _e('Updates only prices and quantities. Run frequently.', 'erp-sync'); ?></p>
-                    </form>
+                    </div>
                 </div>
 
                 <hr style="margin: 20px 0;">
