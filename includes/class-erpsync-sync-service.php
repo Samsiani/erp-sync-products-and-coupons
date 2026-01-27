@@ -376,23 +376,9 @@ class Sync_Service {
             // Mark sync as complete ONLY after all batches have been processed
             $is_sync_complete = ( $processed_batches === $total_chunks );
 
-            // Strict Completion Gate: Only run orphan cleanup if sync completed 100%
+            // Orphan cleanup permanently disabled - products not in feed will not be set to out of stock
             $orphan_count = 0;
-            if ( $total > 0 && $is_sync_complete === true ) {
-                $this->set_progress( $total, $total, 'Running orphan cleanup...' );
-                $orphan_count = $this->cleanup_orphans_sync( $session_id );
-            } elseif ( $total === 0 ) {
-                Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'catalog_import' ] );
-            } else {
-                $progress_percent = $total_chunks > 0 ? round( ( $processed_batches / $total_chunks ) * 100, 1 ) : 0;
-                Logger::instance()->log( 'Safety Stop: Sync stopped abnormally. Orphan cleanup skipped to protect catalog.', [
-                    'session_id'        => $session_id,
-                    'operation'         => 'catalog_import',
-                    'progress_percent'  => $progress_percent,
-                    'processed_batches' => $processed_batches,
-                    'total_batches'     => $total_chunks,
-                ] );
-            }
+            Logger::instance()->log( 'Orphan cleanup disabled by configuration. Skipping.', [ 'session_id' => $session_id, 'operation' => 'catalog_import' ] );
 
             // Update last sync time
             update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
@@ -571,26 +557,9 @@ class Sync_Service {
             // Mark sync as complete ONLY after all batches have been processed
             $is_sync_complete = ( $processed_batches === $total_chunks );
 
-            // Strict Completion Gate: Only run orphan cleanup if sync completed 100%
+            // Orphan cleanup permanently disabled - products not in feed will not be set to out of stock
             $orphan_count = 0;
-            if ( empty( $vendor_codes ) ) {
-                // Only run orphan cleanup for full syncs (not partial SKU syncs)
-                if ( $total > 0 && $is_sync_complete === true ) {
-                    $this->set_progress( $total, $total, 'Running orphan cleanup...' );
-                    $orphan_count = $this->cleanup_orphans_sync( $session_id );
-                } elseif ( $total === 0 ) {
-                    Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'stock_update' ] );
-                } else {
-                    $progress_percent = $total_chunks > 0 ? round( ( $processed_batches / $total_chunks ) * 100, 1 ) : 0;
-                    Logger::instance()->log( 'Safety Stop: Sync stopped abnormally. Orphan cleanup skipped to protect catalog.', [
-                        'session_id'        => $session_id,
-                        'operation'         => 'stock_update',
-                        'progress_percent'  => $progress_percent,
-                        'processed_batches' => $processed_batches,
-                        'total_batches'     => $total_chunks,
-                    ] );
-                }
-            }
+            Logger::instance()->log( 'Orphan cleanup disabled by configuration. Skipping.', [ 'session_id' => $session_id, 'operation' => 'stock_update' ] );
 
             // Update last sync time
             update_option( self::OPTION_LAST_STOCK_SYNC, current_time( 'mysql' ) );
