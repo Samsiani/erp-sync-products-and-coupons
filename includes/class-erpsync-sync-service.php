@@ -585,7 +585,7 @@ class Sync_Service {
         $default_stats = [
             'updated' => 0,
             'skipped' => 0,
-            'errors'  => count( $batch ),
+            'errors'  => 0,
             'total'   => count( $batch ),
         ];
 

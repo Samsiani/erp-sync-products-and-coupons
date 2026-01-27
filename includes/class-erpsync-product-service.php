@@ -95,6 +95,18 @@ class Product_Service {
     ];
 
     /**
+     * Maximum number of not-found SKUs to include in a single log entry.
+     * Used in sync_stock_batch to prevent oversized log messages.
+     */
+    private const MAX_LOGGED_SKUS = 20;
+
+    /**
+     * Batch size for orphan cleanup processing.
+     * Controls how often memory caches are cleared during orphan zeroing.
+     */
+    private const ORPHAN_CLEANUP_BATCH_SIZE = 50;
+
+    /**
      * Cache for attribute taxonomy existence checks.
      *
      * @var array<string, bool>
@@ -673,7 +685,7 @@ class Product_Service {
         if ( ! empty( $not_found_skus ) ) {
             Logger::instance()->log( 'Stock update: Products not found for SKUs', [
                 'count'      => count( $not_found_skus ),
-                'skus'       => array_slice( $not_found_skus, 0, 20 ), // Limit to first 20
+                'skus'       => array_slice( $not_found_skus, 0, self::MAX_LOGGED_SKUS ),
                 'session_id' => $session_id,
             ] );
         }
@@ -1166,7 +1178,6 @@ class Product_Service {
 
         $orphan_count = 0;
         $processed = 0;
-        $batch_size = 50; // Process in smaller batches for memory efficiency
 
         foreach ( $orphan_ids as $product_id ) {
             $product = wc_get_product( (int) $product_id );
@@ -1221,7 +1232,7 @@ class Product_Service {
             $processed++;
 
             // Periodically clear caches to prevent memory exhaustion
-            if ( $processed % $batch_size === 0 ) {
+            if ( $processed % self::ORPHAN_CLEANUP_BATCH_SIZE === 0 ) {
                 wp_cache_flush();
                 if ( function_exists( 'gc_collect_cycles' ) ) {
                     gc_collect_cycles();
