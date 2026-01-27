@@ -42,6 +42,21 @@ class Sync_Service {
     const ORPHAN_CLEANUP_DELAY = 1800;
 
     /**
+     * Transient key for stock sync lock.
+     */
+    const TRANSIENT_LOCK_STOCK = 'erp_sync_lock_stock';
+
+    /**
+     * Transient key for catalog sync lock.
+     */
+    const TRANSIENT_LOCK_CATALOG = 'erp_sync_lock_catalog';
+
+    /**
+     * Lock expiration time in seconds (1 hour).
+     */
+    const TRANSIENT_LOCK_EXPIRATION = 3600;
+
+    /**
      * Whether hooks have been registered.
      *
      * @var bool
@@ -274,6 +289,17 @@ class Sync_Service {
      * @throws \Throwable If API call fails.
      */
     public function import_products_catalog(): array {
+        // Check if a catalog sync is already in progress (process locking)
+        if ( get_transient( self::TRANSIENT_LOCK_CATALOG ) ) {
+            Logger::instance()->log( 'Catalog import aborted: sync already in progress', [
+                'user' => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw new \Exception( __( 'Sync already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        // Set the lock before proceeding
+        set_transient( self::TRANSIENT_LOCK_CATALOG, true, self::TRANSIENT_LOCK_EXPIRATION );
+
         // Close PHP session early to allow concurrent AJAX requests (progress polling)
         // This is critical to enable the progress bar to work while this long process executes
         if ( session_status() === PHP_SESSION_ACTIVE ) {
@@ -290,6 +316,12 @@ class Sync_Service {
         Logger::instance()->log( 'Starting products catalog import (synchronous mode)', [
             'user' => wp_get_current_user()->user_login ?? 'system',
         ] );
+
+        // Completion flag for strict cleanup gate
+        $is_sync_complete = false;
+        $session_id = '';
+        $total = 0;
+        $processed_batches = 0;
 
         try {
             // Generate unique session ID for this sync
@@ -310,7 +342,7 @@ class Sync_Service {
 
             // Split data into chunks of BATCH_SIZE items
             $chunks = array_chunk( $rows, self::BATCH_SIZE );
-            $processed_batches = 0;
+            $total_chunks = count( $chunks );
 
             // Aggregate statistics across all batches
             $aggregate_stats = [
@@ -333,7 +365,7 @@ class Sync_Service {
                 $this->set_progress(
                     ( $index + 1 ) * self::BATCH_SIZE,
                     $total,
-                    sprintf( 'Processed batch %d of %d', $index + 1, count( $chunks ) )
+                    sprintf( 'Processed batch %d of %d', $index + 1, $total_chunks )
                 );
 
                 // Memory management: clear caches after each batch to prevent memory exhaustion
@@ -341,13 +373,25 @@ class Sync_Service {
                 $this->clear_memory_caches();
             }
 
-            // Immediately run orphan cleanup synchronously (only if we received data)
+            // Mark sync as complete ONLY after all batches have been processed
+            $is_sync_complete = ( $processed_batches === $total_chunks );
+
+            // Strict Completion Gate: Only run orphan cleanup if sync completed 100%
             $orphan_count = 0;
-            if ( $total > 0 ) {
+            if ( $total > 0 && $is_sync_complete === true ) {
                 $this->set_progress( $total, $total, 'Running orphan cleanup...' );
                 $orphan_count = $this->cleanup_orphans_sync( $session_id );
-            } else {
+            } elseif ( $total === 0 ) {
                 Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'catalog_import' ] );
+            } else {
+                $progress_percent = $total_chunks > 0 ? round( ( $processed_batches / $total_chunks ) * 100, 1 ) : 0;
+                Logger::instance()->log( 'Safety Stop: Sync stopped abnormally. Orphan cleanup skipped to protect catalog.', [
+                    'session_id'        => $session_id,
+                    'operation'         => 'catalog_import',
+                    'progress_percent'  => $progress_percent,
+                    'processed_batches' => $processed_batches,
+                    'total_batches'     => $total_chunks,
+                ] );
             }
 
             // Update last sync time
@@ -384,6 +428,9 @@ class Sync_Service {
                 'user'  => wp_get_current_user()->user_login ?? 'system',
             ] );
             throw $e;
+        } finally {
+            // Always release the lock, even if the script crashes or throws an exception
+            delete_transient( self::TRANSIENT_LOCK_CATALOG );
         }
     }
 
@@ -433,6 +480,20 @@ class Sync_Service {
      * @throws \Throwable If API call fails.
      */
     public function update_products_stock( string $vendor_codes = '' ): array {
+        // Check if a stock sync is already in progress (process locking)
+        // Only apply lock for full syncs (not partial SKU syncs)
+        if ( empty( $vendor_codes ) && get_transient( self::TRANSIENT_LOCK_STOCK ) ) {
+            Logger::instance()->log( 'Stock update aborted: sync already in progress', [
+                'user' => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw new \Exception( __( 'Sync already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        // Set the lock before proceeding (only for full syncs)
+        if ( empty( $vendor_codes ) ) {
+            set_transient( self::TRANSIENT_LOCK_STOCK, true, self::TRANSIENT_LOCK_EXPIRATION );
+        }
+
         // Close PHP session early to allow concurrent AJAX requests (progress polling)
         // This is critical to enable the progress bar to work while this long process executes
         if ( session_status() === PHP_SESSION_ACTIVE ) {
@@ -450,6 +511,12 @@ class Sync_Service {
             'vendor_codes' => $vendor_codes ? substr( $vendor_codes, 0, 100 ) : '(all)',
             'user'         => wp_get_current_user()->user_login ?? 'system',
         ] );
+
+        // Completion flag for strict cleanup gate
+        $is_sync_complete = false;
+        $session_id = '';
+        $total = 0;
+        $processed_batches = 0;
 
         try {
             // Generate unique session ID for this sync
@@ -470,7 +537,7 @@ class Sync_Service {
 
             // Split data into chunks of BATCH_SIZE items
             $chunks = array_chunk( $rows, self::BATCH_SIZE );
-            $processed_batches = 0;
+            $total_chunks = count( $chunks );
 
             // Aggregate statistics across all batches
             $aggregate_stats = [
@@ -493,7 +560,7 @@ class Sync_Service {
                 $this->set_progress(
                     ( $index + 1 ) * self::BATCH_SIZE,
                     $total,
-                    sprintf( 'Processed batch %d of %d', $index + 1, count( $chunks ) )
+                    sprintf( 'Processed batch %d of %d', $index + 1, $total_chunks )
                 );
 
                 // Memory management: clear caches after each batch to prevent memory exhaustion
@@ -501,16 +568,27 @@ class Sync_Service {
                 $this->clear_memory_caches();
             }
 
-            // Immediately run orphan cleanup synchronously
+            // Mark sync as complete ONLY after all batches have been processed
+            $is_sync_complete = ( $processed_batches === $total_chunks );
+
+            // Strict Completion Gate: Only run orphan cleanup if sync completed 100%
             $orphan_count = 0;
             if ( empty( $vendor_codes ) ) {
                 // Only run orphan cleanup for full syncs (not partial SKU syncs)
-                // Safety Stop: Only proceed if we received data from the API
-                if ( $total > 0 ) {
+                if ( $total > 0 && $is_sync_complete === true ) {
                     $this->set_progress( $total, $total, 'Running orphan cleanup...' );
                     $orphan_count = $this->cleanup_orphans_sync( $session_id );
-                } else {
+                } elseif ( $total === 0 ) {
                     Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'stock_update' ] );
+                } else {
+                    $progress_percent = $total_chunks > 0 ? round( ( $processed_batches / $total_chunks ) * 100, 1 ) : 0;
+                    Logger::instance()->log( 'Safety Stop: Sync stopped abnormally. Orphan cleanup skipped to protect catalog.', [
+                        'session_id'        => $session_id,
+                        'operation'         => 'stock_update',
+                        'progress_percent'  => $progress_percent,
+                        'processed_batches' => $processed_batches,
+                        'total_batches'     => $total_chunks,
+                    ] );
                 }
             }
 
@@ -548,6 +626,12 @@ class Sync_Service {
                 'user'  => wp_get_current_user()->user_login ?? 'system',
             ] );
             throw $e;
+        } finally {
+            // Always release the lock, even if the script crashes or throws an exception
+            // Only release lock for full syncs (as only full syncs set the lock)
+            if ( empty( $vendor_codes ) ) {
+                delete_transient( self::TRANSIENT_LOCK_STOCK );
+            }
         }
     }
 
