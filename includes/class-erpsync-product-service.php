@@ -606,6 +606,9 @@ class Product_Service {
         // Collect unique branch locations for discovery
         $discovered_locations = [];
 
+        // Track SKUs not found to avoid repeated logging
+        $not_found_skus = [];
+
         foreach ( $rows as $row ) {
             $sku = sanitize_text_field( trim( $row['VendorCode'] ?? '' ) );
 
@@ -625,13 +628,12 @@ class Product_Service {
             }
 
             try {
-                // Find product by SKU
+                // Find product by SKU - uses WooCommerce's optimized lookup table
                 $product_id = wc_get_product_id_by_sku( $sku );
 
                 if ( ! $product_id ) {
-                    Logger::instance()->log( 'Stock update: Product not found for SKU', [
-                        'sku' => $sku,
-                    ] );
+                    // Collect not found SKUs for batch logging (reduces log spam)
+                    $not_found_skus[] = $sku;
                     $stats['skipped']++;
                     continue;
                 }
@@ -647,11 +649,16 @@ class Product_Service {
                 }
 
                 // Update stock and price data only
+                // This method also updates _erp_sync_session_id meta
                 $this->set_product_stock_data( $product, $row, $session_id );
 
-                // Save product
+                // Save product (persists all changes including session_id)
                 $product->save();
                 $stats['updated']++;
+
+                // Clear individual product from memory to prevent buildup
+                // This is safe because we're done with this product
+                unset( $product );
 
             } catch ( \Throwable $e ) {
                 Logger::instance()->log( 'Exception during stock update', [
@@ -660,6 +667,15 @@ class Product_Service {
                 ] );
                 $stats['errors']++;
             }
+        }
+
+        // Log not found SKUs in a single entry (if any)
+        if ( ! empty( $not_found_skus ) ) {
+            Logger::instance()->log( 'Stock update: Products not found for SKUs', [
+                'count'      => count( $not_found_skus ),
+                'skus'       => array_slice( $not_found_skus, 0, 20 ), // Limit to first 20
+                'session_id' => $session_id,
+            ] );
         }
 
         // Update detected branches if we found any new ones
@@ -1099,6 +1115,9 @@ class Product_Service {
      *
      * Safety: Only affects products managed by ERP Sync (_erp_sync_managed = 1).
      *
+     * Memory optimization: Processes orphans in batches and clears object cache
+     * periodically to prevent memory exhaustion on large product catalogs.
+     *
      * @param string $session_id The current sync session ID.
      * @return int Number of orphaned products updated.
      */
@@ -1146,6 +1165,8 @@ class Product_Service {
         }
 
         $orphan_count = 0;
+        $processed = 0;
+        $batch_size = 50; // Process in smaller batches for memory efficiency
 
         foreach ( $orphan_ids as $product_id ) {
             $product = wc_get_product( (int) $product_id );
@@ -1159,6 +1180,7 @@ class Product_Service {
 
             // Skip if stock is already 0
             if ( $old_stock === 0 || $old_stock === null ) {
+                unset( $product );
                 continue;
             }
 
@@ -1193,6 +1215,18 @@ class Product_Service {
                 'old_stock'   => $old_stock,
                 'session_id'  => $session_id,
             ] );
+
+            // Clear product from memory
+            unset( $product );
+            $processed++;
+
+            // Periodically clear caches to prevent memory exhaustion
+            if ( $processed % $batch_size === 0 ) {
+                wp_cache_flush();
+                if ( function_exists( 'gc_collect_cycles' ) ) {
+                    gc_collect_cycles();
+                }
+            }
         }
 
         Logger::instance()->log( 'Orphan cleanup completed', [
