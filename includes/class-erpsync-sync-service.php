@@ -347,7 +347,7 @@ class Sync_Service {
                 $this->set_progress( $total, $total, 'Running orphan cleanup...' );
                 $orphan_count = $this->cleanup_orphans_sync( $session_id );
             } else {
-                Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id ] );
+                Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'catalog_import' ] );
             }
 
             // Update last sync time
@@ -510,7 +510,7 @@ class Sync_Service {
                     $this->set_progress( $total, $total, 'Running orphan cleanup...' );
                     $orphan_count = $this->cleanup_orphans_sync( $session_id );
                 } else {
-                    Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id ] );
+                    Logger::instance()->log( 'Safety Stop: API returned 0 items. Orphan cleanup skipped to prevent catalog wipe.', [ 'session_id' => $session_id, 'operation' => 'stock_update' ] );
                 }
             }
 
