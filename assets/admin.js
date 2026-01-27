@@ -120,10 +120,11 @@
             startProgressPolling();
             
             // Make AJAX request
+            // Long timeout (30 minutes) for large sync operations
             $.ajax({
                 url: erpSyncAdmin.ajaxurl,
                 type: 'POST',
-                timeout: 0, // No timeout for long syncs
+                timeout: 1800000, // 30 minutes timeout for long syncs
                 data: {
                     action: action,
                     nonce: erpSyncAdmin.nonce

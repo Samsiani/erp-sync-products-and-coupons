@@ -280,9 +280,10 @@ class Sync_Service {
             session_write_close();
         }
 
-        // Prevent timeouts during large syncs
+        // Set reasonable max time limit for large syncs (30 minutes)
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-        @set_time_limit( 0 );
+        @set_time_limit( 1800 );
+        // Continue processing even if the user closes the browser
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         @ignore_user_abort( true );
 
@@ -433,9 +434,10 @@ class Sync_Service {
             session_write_close();
         }
 
-        // Prevent timeouts during large syncs
+        // Set reasonable max time limit for large syncs (30 minutes)
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-        @set_time_limit( 0 );
+        @set_time_limit( 1800 );
+        // Continue processing even if the user closes the browser
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         @ignore_user_abort( true );
 
