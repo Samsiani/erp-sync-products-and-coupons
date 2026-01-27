@@ -31,6 +31,9 @@ class Admin {
         // Branch settings
         add_action( 'admin_post_erp_sync_save_branches', [ __CLASS__, 'handle_save_branches' ] );
 
+        // Logs management
+        add_action( 'admin_post_erp_sync_clear_logs', [ __CLASS__, 'handle_clear_logs' ] );
+
         // Cron & diagnostics
         add_action( 'admin_post_erp_sync_run_cron_now', [ __CLASS__, 'handle_run_cron_now' ] );
         add_action( 'admin_post_erp_sync_download_last_xml', [ __CLASS__, 'handle_download_last_xml' ] );
@@ -92,6 +95,10 @@ class Admin {
         $logs_table = new Logs_List_Table();
         $logs_table->prepare_items();
 
+        // Check for success notice
+        $logs_cleared = isset( $_GET['logs_cleared'] ) && $_GET['logs_cleared'] === '1';
+        $logs_clear_error = isset( $_GET['logs_clear_error'] ) && $_GET['logs_clear_error'] === '1';
+
         ?>
         <div class="wrap">
             <h1><?php echo esc_html__( 'Product Logs', 'erp-sync' ); ?></h1>
@@ -99,12 +106,58 @@ class Admin {
                 <?php echo esc_html__( 'History of product changes (stock, price) synced from the ERP system.', 'erp-sync' ); ?>
             </p>
             
+            <?php if ( $logs_cleared ) : ?>
+                <div class="notice notice-success is-dismissible">
+                    <p><?php echo esc_html__( 'All logs have been cleared successfully.', 'erp-sync' ); ?></p>
+                </div>
+            <?php endif; ?>
+            
+            <?php if ( $logs_clear_error ) : ?>
+                <div class="notice notice-error is-dismissible">
+                    <p><?php echo esc_html__( 'Failed to clear logs. Please try again or check the error log.', 'erp-sync' ); ?></p>
+                </div>
+            <?php endif; ?>
+            
+            <!-- Clear All Logs Button -->
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 10px 0;" onsubmit="return confirm('<?php echo esc_js( __( 'Are you sure you want to delete all logs?', 'erp-sync' ) ); ?>');">
+                <input type="hidden" name="action" value="erp_sync_clear_logs" />
+                <?php wp_nonce_field( 'erp_sync_clear_logs', 'erp_sync_clear_logs_nonce' ); ?>
+                <button type="submit" class="button button-secondary button-link-delete"><?php echo esc_html__( 'Clear All Logs', 'erp-sync' ); ?></button>
+            </form>
+            
             <form method="get">
                 <input type="hidden" name="page" value="<?php echo esc_attr( self::LOGS_MENU_SLUG ); ?>" />
                 <?php $logs_table->display(); ?>
             </form>
         </div>
         <?php
+    }
+
+    /**
+     * Handle the clear logs action.
+     */
+    public static function handle_clear_logs(): void {
+        // Check nonce
+        check_admin_referer( 'erp_sync_clear_logs', 'erp_sync_clear_logs_nonce' );
+
+        // Check permissions
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( esc_html__( 'You do not have sufficient permissions to perform this action.', 'erp-sync' ) );
+        }
+
+        // Clear all logs and check result
+        $success = Audit_Logger::clear_all_logs();
+
+        // Redirect back to logs page with appropriate notice
+        $args = [ 'page' => self::LOGS_MENU_SLUG ];
+        if ( $success ) {
+            $args['logs_cleared'] = 1;
+        } else {
+            $args['logs_clear_error'] = 1;
+        }
+
+        wp_redirect( add_query_arg( $args, admin_url( 'admin.php' ) ) );
+        exit;
     }
 
     public static function handle_save_settings(): void {
