@@ -241,6 +241,37 @@ class Audit_Logger {
     }
 
     /**
+     * Clear all logs from the database.
+     *
+     * @return bool True on success, false on failure.
+     */
+    public static function clear_all_logs(): bool {
+        global $wpdb;
+
+        $table_name = self::get_table_name();
+
+        // Check if table exists - use prepared statement for safety
+        $table_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table_name ) ) === $table_name;
+        if ( ! $table_exists ) {
+            return false;
+        }
+
+        // Note: Table name cannot be parameterized in prepared statements,
+        // but it's safely constructed from $wpdb->prefix which is trusted
+        $result = $wpdb->query( "TRUNCATE TABLE `$table_name`" );
+
+        if ( $result === false ) {
+            Logger::instance()->log( 'Failed to clear all product audit logs', [
+                'error' => $wpdb->last_error,
+            ] );
+            return false;
+        }
+
+        Logger::instance()->log( 'All product audit logs cleared' );
+        return true;
+    }
+
+    /**
      * Clean old logs (keep last N days).
      *
      * @param int $days Number of days to keep. Default 90.
