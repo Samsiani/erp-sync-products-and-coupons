@@ -691,6 +691,8 @@ class Sync_Service {
                 $product->set_manage_stock( true );
                 $product->set_stock_quantity( 0 );
                 $product->set_stock_status( 'outofstock' );
+                // Mark as ERP-managed so it's tracked in future syncs
+                $product->update_meta_data( '_erp_sync_managed', 1 );
                 $product->update_meta_data( '_erp_sync_last_update', current_time( 'mysql' ) );
                 $product->update_meta_data( '_erp_sync_zeroed_reason', 'not_found_in_erp' );
                 $product->save();
