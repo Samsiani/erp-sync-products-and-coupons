@@ -1197,9 +1197,32 @@ class Product_Service {
             // Get current stock for logging
             $old_stock = $product->get_stock_quantity();
 
-            // Skip if stock is already 0
+            // Always mark as ERP-managed so it's tracked in future syncs
+            // This ensures consistency even for products with stock already at 0
+            $needs_save = false;
+            $is_erp_managed = $product->get_meta( '_erp_sync_managed', true );
+            if ( $is_erp_managed !== '1' && $is_erp_managed !== 1 ) {
+                $product->update_meta_data( '_erp_sync_managed', 1 );
+                $needs_save = true;
+            }
+
+            // Skip if stock is already 0 (but still mark as managed above)
             if ( $old_stock === 0 || $old_stock === null ) {
+                // Save if we need to update the managed flag
+                if ( $needs_save ) {
+                    $product->save();
+                }
                 unset( $product );
+                $processed++;
+                
+                // Periodically clear caches even for skipped products
+                if ( $processed % self::ORPHAN_CLEANUP_BATCH_SIZE === 0 ) {
+                    wp_cache_flush();
+                    $this->clear_cache();
+                    if ( function_exists( 'gc_collect_cycles' ) ) {
+                        gc_collect_cycles();
+                    }
+                }
                 continue;
             }
 
@@ -1207,8 +1230,6 @@ class Product_Service {
             $product->set_manage_stock( true );
             $product->set_stock_quantity( 0 );
             $product->set_stock_status( 'outofstock' );
-            // Mark as ERP-managed so it's tracked in future syncs
-            $product->update_meta_data( '_erp_sync_managed', 1 );
             $product->update_meta_data( '_erp_sync_orphan_zeroed_at', current_time( 'mysql' ) );
             $product->update_meta_data( '_erp_sync_orphan_session_id', $session_id );
             $product->save();
