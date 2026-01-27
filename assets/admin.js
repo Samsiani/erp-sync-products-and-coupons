@@ -1,9 +1,13 @@
 /**
- * ERP Sync Admin JavaScript - Version 1.3.0
+ * ERP Sync Admin JavaScript - Version 1.4.0
  */
 
 (function($) {
     'use strict';
+
+    // Progress polling state
+    let progressInterval = null;
+    let syncInProgress = false;
 
     // Tab Navigation
     function initTabs() {
@@ -31,47 +35,163 @@
         }
     }
 
-    // Progress Bar Polling
-    function initProgressPolling() {
-        let progressInterval = null;
+    // Start Progress Bar Polling
+    function startProgressPolling() {
+        if (progressInterval) {
+            return; // Already polling
+        }
         
-        function checkProgress() {
+        $('#erp-sync-progress-container').show();
+        $('.erp-sync-progress-fill').css('width', '0%');
+        $('.erp-sync-progress-text').text('Initializing...');
+        
+        progressInterval = setInterval(checkProgress, 1000);
+    }
+
+    // Stop Progress Bar Polling
+    function stopProgressPolling() {
+        if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+        }
+        syncInProgress = false;
+    }
+
+    // Check Progress via AJAX
+    function checkProgress() {
+        $.ajax({
+            url: erpSyncAdmin.ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'erp_sync_sync_progress',
+                nonce: erpSyncAdmin.nonce
+            },
+            success: function(response) {
+                if (response.success && response.data) {
+                    const data = response.data;
+                    
+                    if (data.status !== 'idle' && data.progress > 0) {
+                        $('#erp-sync-progress-container').show();
+                        $('.erp-sync-progress-fill').css('width', data.progress + '%');
+                        $('.erp-sync-progress-text').text(data.status + ' (' + data.progress + '%)');
+                    } else if (!syncInProgress) {
+                        // Only hide if no sync is in progress (AJAX might complete before progress updates)
+                        $('#erp-sync-progress-container').fadeOut();
+                        stopProgressPolling();
+                    }
+                }
+            }
+        });
+    }
+
+    // Progress Bar Polling for legacy form submissions
+    function initProgressPolling() {
+        // Start polling when traditional sync form buttons are clicked (coupons sync)
+        $('.erp-sync-action-buttons form').on('submit', function() {
+            syncInProgress = true;
+            startProgressPolling();
+        });
+    }
+
+    // AJAX Sync Buttons Handler
+    function initAjaxSyncButtons() {
+        $(document).on('click', '.erp-sync-ajax-btn', function(e) {
+            e.preventDefault();
+            
+            const $button = $(this);
+            const action = $button.data('action');
+            const originalText = $button.text();
+            
+            // Prevent double-clicks
+            if ($button.prop('disabled')) {
+                return;
+            }
+            
+            // Store original width to prevent layout jump
+            const originalWidth = $button.outerWidth();
+            $button.css('min-width', originalWidth + 'px');
+            
+            // Disable button and show loading state
+            $button.prop('disabled', true).addClass('updating-message');
+            $button.html(originalText + ' <span class="erp-sync-loading"></span>');
+            
+            // Start progress polling
+            syncInProgress = true;
+            startProgressPolling();
+            
+            // Make AJAX request
+            // Long timeout (30 minutes) for large sync operations
             $.ajax({
                 url: erpSyncAdmin.ajaxurl,
                 type: 'POST',
+                timeout: 1800000, // 30 minutes timeout for long syncs
                 data: {
-                    action: 'erp_sync_sync_progress',
+                    action: action,
                     nonce: erpSyncAdmin.nonce
                 },
                 success: function(response) {
-                    if (response.success && response.data) {
-                        const data = response.data;
+                    syncInProgress = false;
+                    
+                    if (response.success) {
+                        // Show success state
+                        $button.removeClass('updating-message').addClass('button-primary');
                         
-                        if (data.status !== 'idle' && data.progress > 0) {
-                            $('#erp-sync-progress-container').show();
-                            $('.erp-sync-progress-fill').css('width', data.progress + '%');
-                            $('.erp-sync-progress-text').text(data.status + ' (' + data.progress + '%)');
-                        } else {
-                            $('#erp-sync-progress-container').fadeOut();
-                            if (progressInterval) {
-                                clearInterval(progressInterval);
-                                progressInterval = null;
+                        // Build result message
+                        let resultMsg = 'Completed! ✅';
+                        if (response.data) {
+                            const d = response.data;
+                            if (d.created !== undefined || d.updated !== undefined) {
+                                resultMsg = 'Done: ';
+                                if (d.created) resultMsg += d.created + ' created, ';
+                                if (d.updated) resultMsg += d.updated + ' updated, ';
+                                if (d.errors) resultMsg += d.errors + ' errors, ';
+                                if (d.orphans_zeroed) resultMsg += d.orphans_zeroed + ' orphans zeroed';
+                                resultMsg = resultMsg.replace(/, $/, '') + ' ✅';
                             }
                         }
+                        
+                        $button.html(resultMsg);
+                        
+                        // Update progress bar to 100%
+                        $('.erp-sync-progress-fill').css('width', '100%');
+                        $('.erp-sync-progress-text').text('Completed!');
+                        
+                        // Reset after 3 seconds
+                        setTimeout(function() {
+                            $button.removeClass('button-primary').prop('disabled', false);
+                            $button.text(originalText);
+                            $button.css('min-width', '');
+                            $('#erp-sync-progress-container').fadeOut();
+                            stopProgressPolling();
+                        }, 3000);
+                    } else {
+                        // Show error - revert immediately
+                        $button.removeClass('updating-message');
+                        $button.prop('disabled', false);
+                        $button.text(originalText);
+                        $button.css('min-width', '');
+                        
+                        $('#erp-sync-progress-container').fadeOut();
+                        stopProgressPolling();
+                        
+                        alert('Error: ' + (response.data?.message || 'Unknown error'));
                     }
+                },
+                error: function(xhr, status, error) {
+                    syncInProgress = false;
+                    
+                    // Show error - revert immediately
+                    $button.removeClass('updating-message');
+                    $button.prop('disabled', false);
+                    $button.text(originalText);
+                    $button.css('min-width', '');
+                    
+                    $('#erp-sync-progress-container').fadeOut();
+                    stopProgressPolling();
+                    
+                    alert('AJAX Error: ' + error);
                 }
             });
-        }
-        
-        // Start polling when sync buttons are clicked
-        $('.erp-sync-action-buttons form').on('submit', function() {
-            $('#erp-sync-progress-container').show();
-            $('.erp-sync-progress-fill').css('width', '0%');
-            $('.erp-sync-progress-text').text('Initializing...');
-            
-            if (!progressInterval) {
-                progressInterval = setInterval(checkProgress, 1000);
-            }
         });
     }
 
@@ -238,11 +358,12 @@
     $(document).ready(function() {
         initTabs();
         initProgressPolling();
+        initAjaxSyncButtons();
         initQuickEdit();
         initConfirmations();
         initSingleProductUpdate();
         
-        console.log('ERP Sync Admin JS v1.3.0 loaded');
+        console.log('ERP Sync Admin JS v1.4.0 loaded');
     });
 
 })(jQuery);

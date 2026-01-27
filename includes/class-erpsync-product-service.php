@@ -1234,6 +1234,7 @@ class Product_Service {
             // Periodically clear caches to prevent memory exhaustion
             if ( $processed % self::ORPHAN_CLEANUP_BATCH_SIZE === 0 ) {
                 wp_cache_flush();
+                $this->clear_cache();
                 if ( function_exists( 'gc_collect_cycles' ) ) {
                     gc_collect_cycles();
                 }
