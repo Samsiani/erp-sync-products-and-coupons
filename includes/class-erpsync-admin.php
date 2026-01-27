@@ -293,7 +293,8 @@ class Admin {
 
         if ( is_array( $branches_input ) ) {
             foreach ( $branches_input as $data ) {
-                $original_name = sanitize_text_field( $data['original'] ?? '' );
+                // Use wp_strip_all_tags to preserve internal whitespace (double spaces) which might be part of the branch name from 1C
+                $original_name = isset( $data['original'] ) ? wp_strip_all_tags( $data['original'] ) : '';
                 if ( empty( $original_name ) ) {
                     continue;
                 }
