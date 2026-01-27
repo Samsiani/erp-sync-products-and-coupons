@@ -828,6 +828,9 @@ class Product_Service {
         // This ensures excluded warehouses are hidden from the frontend
         $product->update_meta_data( '_erp_sync_warehouse_data', $valid_warehouses );
 
+        // Mark as ERP-managed product (ensures it's tracked in future syncs)
+        $product->update_meta_data( '_erp_sync_managed', 1 );
+
         // Update sync timestamp
         $product->update_meta_data( '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
 
@@ -1125,7 +1128,10 @@ class Product_Service {
      * Identifies products that were NOT present in the sync data (i.e., their
      * session_id doesn't match the current sync session) and sets their stock to 0.
      *
-     * Safety: Only affects products managed by ERP Sync (_erp_sync_managed = 1).
+     * ABSOLUTE SYNC: This method now processes ALL WooCommerce products, not just
+     * those previously managed by ERP Sync. Any product missing from the current
+     * ERP sync session will be zeroed out. This ensures complete inventory accuracy
+     * even for products that were never synced before.
      *
      * Memory optimization: Processes orphans in batches and clears object cache
      * periodically to prevent memory exhaustion on large product catalogs.
@@ -1141,24 +1147,26 @@ class Product_Service {
             return 0;
         }
 
-        Logger::instance()->log( 'Starting orphan cleanup', [
+        Logger::instance()->log( 'Starting orphan cleanup (absolute sync mode)', [
             'session_id' => $session_id,
         ] );
 
-        // Query: Find all products where:
+        // Query: Find ALL products where:
         // - Post type = product
-        // - _erp_sync_managed = 1 (Only touch our products)
+        // - Post status is publish, draft, pending, or private
         // - _erp_sync_session_id != $session_id OR does not exist
+        //
+        // CRITICAL: We no longer filter by _erp_sync_managed = 1.
+        // This ensures ABSOLUTE synchronization - any product in WooCommerce
+        // that is not present in the current ERP sync will be zeroed out.
+        // This prevents inventory inconsistencies from products that were
+        // never synced before or were added manually.
         //
         // We use a direct SQL query for performance with large datasets
         $orphan_ids = $wpdb->get_col(
             $wpdb->prepare(
                 "SELECT DISTINCT p.ID
                 FROM {$wpdb->posts} p
-                INNER JOIN {$wpdb->postmeta} pm_managed 
-                    ON p.ID = pm_managed.post_id 
-                    AND pm_managed.meta_key = '_erp_sync_managed' 
-                    AND pm_managed.meta_value = '1'
                 LEFT JOIN {$wpdb->postmeta} pm_session 
                     ON p.ID = pm_session.post_id 
                     AND pm_session.meta_key = '_erp_sync_session_id'
@@ -1199,6 +1207,8 @@ class Product_Service {
             $product->set_manage_stock( true );
             $product->set_stock_quantity( 0 );
             $product->set_stock_status( 'outofstock' );
+            // Mark as ERP-managed so it's tracked in future syncs
+            $product->update_meta_data( '_erp_sync_managed', 1 );
             $product->update_meta_data( '_erp_sync_orphan_zeroed_at', current_time( 'mysql' ) );
             $product->update_meta_data( '_erp_sync_orphan_session_id', $session_id );
             $product->save();
