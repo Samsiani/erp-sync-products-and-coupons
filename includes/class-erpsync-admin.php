@@ -612,6 +612,10 @@ class Admin {
      * AJAX handler for stock sync.
      * Runs synchronous stock update and returns JSON response.
      */
+    /**
+     * AJAX handler for stock sync with batch processing.
+     * Handles 'init', 'process', and 'cleanup' steps.
+     */
     public static function ajax_sync_stock(): void {
         check_ajax_referer( 'erp_sync_ajax', 'nonce' );
 
@@ -619,27 +623,31 @@ class Admin {
             wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
         }
 
+        // Get batch processing parameters
+        $step       = isset( $_POST['step'] ) ? sanitize_text_field( wp_unslash( $_POST['step'] ) ) : 'init';
+        $offset     = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        $batch_size = isset( $_POST['batch_size'] ) ? absint( $_POST['batch_size'] ) : 50;
+        $session_id = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+
+        // Generate session ID if not provided
+        if ( empty( $session_id ) ) {
+            $session_id = uniqid( 'stock_', true );
+        }
+
         try {
             $sync_service = new Sync_Service( new API_Client() );
-            $result = $sync_service->update_products_stock();
+            $result = $sync_service->update_products_stock_step( $step, $offset, $batch_size, $session_id );
 
-            wp_send_json_success( [
-                'message'        => __( 'Stock sync completed successfully', 'erp-sync' ),
-                'updated'        => $result['updated'] ?? 0,
-                'skipped'        => $result['skipped'] ?? 0,
-                'errors'         => $result['errors'] ?? 0,
-                'total'          => $result['total'] ?? 0,
-                'orphans_zeroed' => $result['orphans_zeroed'] ?? 0,
-            ] );
+            wp_send_json_success( $result );
         } catch ( \Throwable $e ) {
-            Logger::instance()->log( 'AJAX stock sync failed', [ 'error' => $e->getMessage() ] );
+            Logger::instance()->log( 'AJAX stock sync failed', [ 'error' => $e->getMessage(), 'step' => $step ] );
             wp_send_json_error( [ 'message' => $e->getMessage() ] );
         }
     }
 
     /**
-     * AJAX handler for catalog sync.
-     * Runs synchronous catalog import and returns JSON response.
+     * AJAX handler for catalog sync with batch processing.
+     * Handles 'init', 'process', and 'cleanup' steps.
      */
     public static function ajax_sync_catalog(): void {
         check_ajax_referer( 'erp_sync_ajax', 'nonce' );
@@ -648,20 +656,24 @@ class Admin {
             wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
         }
 
+        // Get batch processing parameters
+        $step       = isset( $_POST['step'] ) ? sanitize_text_field( wp_unslash( $_POST['step'] ) ) : 'init';
+        $offset     = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        $batch_size = isset( $_POST['batch_size'] ) ? absint( $_POST['batch_size'] ) : 50;
+        $session_id = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+
+        // Generate session ID if not provided
+        if ( empty( $session_id ) ) {
+            $session_id = uniqid( 'catalog_', true );
+        }
+
         try {
             $sync_service = new Sync_Service( new API_Client() );
-            $result = $sync_service->import_products_catalog();
+            $result = $sync_service->import_products_catalog_step( $step, $offset, $batch_size, $session_id );
 
-            wp_send_json_success( [
-                'message'        => __( 'Catalog sync completed successfully', 'erp-sync' ),
-                'created'        => $result['created'] ?? 0,
-                'updated'        => $result['updated'] ?? 0,
-                'errors'         => $result['errors'] ?? 0,
-                'total'          => $result['total'] ?? 0,
-                'orphans_zeroed' => $result['orphans_zeroed'] ?? 0,
-            ] );
+            wp_send_json_success( $result );
         } catch ( \Throwable $e ) {
-            Logger::instance()->log( 'AJAX catalog sync failed', [ 'error' => $e->getMessage() ] );
+            Logger::instance()->log( 'AJAX catalog sync failed', [ 'error' => $e->getMessage(), 'step' => $step ] );
             wp_send_json_error( [ 'message' => $e->getMessage() ] );
         }
     }

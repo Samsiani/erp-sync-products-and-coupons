@@ -1,5 +1,6 @@
 /**
- * ERP Sync Admin JavaScript - Version 1.4.0
+ * ERP Sync Admin JavaScript - Version 1.5.0
+ * Implements batch processing with retry logic for large datasets
  */
 
 (function($) {
@@ -8,6 +9,11 @@
     // Progress polling state
     let progressInterval = null;
     let syncInProgress = false;
+
+    // Batch processing configuration
+    const BATCH_SIZE = 50;
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 5000;
 
     // Tab Navigation
     function initTabs() {
@@ -93,7 +99,7 @@
         });
     }
 
-    // AJAX Sync Buttons Handler
+    // AJAX Sync Buttons Handler with Batch Processing
     function initAjaxSyncButtons() {
         $(document).on('click', '.erp-sync-ajax-btn', function(e) {
             e.preventDefault();
@@ -119,80 +125,188 @@
             syncInProgress = true;
             startProgressPolling();
             
-            // Make AJAX request
-            // Long timeout (30 minutes) for large sync operations
-            $.ajax({
-                url: erpSyncAdmin.ajaxurl,
-                type: 'POST',
-                timeout: 1800000, // 30 minutes timeout for long syncs
-                data: {
-                    action: action,
-                    nonce: erpSyncAdmin.nonce
-                },
-                success: function(response) {
-                    syncInProgress = false;
-                    
-                    if (response.success) {
-                        // Show success state
-                        $button.removeClass('updating-message').addClass('button-primary');
-                        
-                        // Build result message
-                        let resultMsg = 'Completed! ✅';
-                        if (response.data) {
-                            const d = response.data;
-                            if (d.created !== undefined || d.updated !== undefined) {
-                                resultMsg = 'Done: ';
-                                if (d.created) resultMsg += d.created + ' created, ';
-                                if (d.updated) resultMsg += d.updated + ' updated, ';
-                                if (d.errors) resultMsg += d.errors + ' errors, ';
-                                if (d.orphans_zeroed) resultMsg += d.orphans_zeroed + ' orphans zeroed';
-                                resultMsg = resultMsg.replace(/, $/, '') + ' ✅';
-                            }
-                        }
-                        
-                        $button.html(resultMsg);
-                        
-                        // Update progress bar to 100%
-                        $('.erp-sync-progress-fill').css('width', '100%');
-                        $('.erp-sync-progress-text').text('Completed!');
-                        
-                        // Reset after 3 seconds
-                        setTimeout(function() {
-                            $button.removeClass('button-primary').prop('disabled', false);
-                            $button.text(originalText);
-                            $button.css('min-width', '');
-                            $('#erp-sync-progress-container').fadeOut();
-                            stopProgressPolling();
-                        }, 3000);
-                    } else {
-                        // Show error - revert immediately
-                        $button.removeClass('updating-message');
-                        $button.prop('disabled', false);
-                        $button.text(originalText);
-                        $button.css('min-width', '');
-                        
-                        $('#erp-sync-progress-container').fadeOut();
-                        stopProgressPolling();
-                        
-                        alert('Error: ' + (response.data?.message || 'Unknown error'));
-                    }
-                },
-                error: function(xhr, status, error) {
-                    syncInProgress = false;
-                    
-                    // Show error - revert immediately
-                    $button.removeClass('updating-message');
-                    $button.prop('disabled', false);
-                    $button.text(originalText);
-                    $button.css('min-width', '');
-                    
-                    $('#erp-sync-progress-container').fadeOut();
-                    stopProgressPolling();
-                    
-                    alert('AJAX Error: ' + error);
-                }
+            // Generate unique session ID for this sync
+            const sessionId = 'sync_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            
+            // Start the recursive batch sync process
+            runSyncStep(action, 'init', 0, sessionId, 0, $button, originalText, {
+                created: 0,
+                updated: 0,
+                skipped: 0,
+                errors: 0,
+                orphans_zeroed: 0
             });
         });
+    }
+
+    /**
+     * Run a single sync step (init, process, or cleanup)
+     * 
+     * @param {string} action - The AJAX action (erp_sync_stock or erp_sync_catalog)
+     * @param {string} step - Current step: 'init', 'process', or 'cleanup'
+     * @param {number} offset - Current offset for batch processing
+     * @param {string} sessionId - Unique session identifier
+     * @param {number} retryCount - Number of retry attempts for current step
+     * @param {jQuery} $button - The button element
+     * @param {string} originalText - Original button text
+     * @param {object} aggregateStats - Accumulated statistics
+     */
+    function runSyncStep(action, step, offset, sessionId, retryCount, $button, originalText, aggregateStats) {
+        $.ajax({
+            url: erpSyncAdmin.ajaxurl,
+            type: 'POST',
+            timeout: 60000, // 1 minute timeout per batch request
+            data: {
+                action: action,
+                nonce: erpSyncAdmin.nonce,
+                step: step,
+                offset: offset,
+                batch_size: BATCH_SIZE,
+                session_id: sessionId
+            },
+            success: function(response) {
+                if (response.success) {
+                    const data = response.data;
+                    
+                    if (step === 'init') {
+                        // Init step completed - start processing batches
+                        const totalCount = data.total || 0;
+                        
+                        if (totalCount === 0) {
+                            // No items to process, go directly to cleanup
+                            runSyncStep(action, 'cleanup', 0, sessionId, 0, $button, originalText, aggregateStats);
+                        } else {
+                            // Update progress bar
+                            updateProgressUI(0, totalCount, 'Starting batch processing...');
+                            
+                            // Start processing first batch
+                            runSyncStep(action, 'process', 0, sessionId, 0, $button, originalText, {
+                                ...aggregateStats,
+                                total: totalCount
+                            });
+                        }
+                    } else if (step === 'process') {
+                        // Accumulate stats from this batch
+                        aggregateStats.created = (aggregateStats.created || 0) + (data.created || 0);
+                        aggregateStats.updated = (aggregateStats.updated || 0) + (data.updated || 0);
+                        aggregateStats.skipped = (aggregateStats.skipped || 0) + (data.skipped || 0);
+                        aggregateStats.errors = (aggregateStats.errors || 0) + (data.errors || 0);
+                        
+                        const nextOffset = data.next_offset || (offset + BATCH_SIZE);
+                        const totalCount = data.total || aggregateStats.total || 0;
+                        const processed = data.processed || 0;
+                        
+                        // Update progress bar
+                        const progressPercent = totalCount > 0 ? Math.round((nextOffset / totalCount) * 100) : 0;
+                        updateProgressUI(Math.min(nextOffset, totalCount), totalCount, 
+                            'Processing batch ' + Math.ceil(nextOffset / BATCH_SIZE) + '...');
+                        
+                        if (nextOffset >= totalCount) {
+                            // All batches processed, run cleanup
+                            runSyncStep(action, 'cleanup', 0, sessionId, 0, $button, originalText, {
+                                ...aggregateStats,
+                                total: totalCount
+                            });
+                        } else {
+                            // Process next batch
+                            runSyncStep(action, 'process', nextOffset, sessionId, 0, $button, originalText, {
+                                ...aggregateStats,
+                                total: totalCount
+                            });
+                        }
+                    } else if (step === 'cleanup') {
+                        // Cleanup completed - sync is done
+                        aggregateStats.orphans_zeroed = data.orphans_zeroed || 0;
+                        
+                        handleSyncSuccess($button, originalText, aggregateStats);
+                    }
+                } else {
+                    // Server returned error
+                    handleSyncError($button, originalText, response.data?.message || 'Unknown error');
+                }
+            },
+            error: function(xhr, status, error) {
+                // AJAX error - try to retry
+                if (retryCount < MAX_RETRIES) {
+                    const newRetryCount = retryCount + 1;
+                    updateProgressUI(offset, aggregateStats.total || 0, 
+                        'Retrying... (attempt ' + newRetryCount + '/' + MAX_RETRIES + ')');
+                    
+                    // Wait before retrying
+                    setTimeout(function() {
+                        runSyncStep(action, step, offset, sessionId, newRetryCount, $button, originalText, aggregateStats);
+                    }, RETRY_DELAY_MS);
+                } else {
+                    // Max retries reached
+                    handleSyncError($button, originalText, 'Failed after ' + MAX_RETRIES + ' retries: ' + error);
+                }
+            }
+        });
+    }
+
+    /**
+     * Update the progress UI
+     */
+    function updateProgressUI(current, total, statusText) {
+        const progressPercent = total > 0 ? Math.round((current / total) * 100) : 0;
+        $('#erp-sync-progress-container').show();
+        $('.erp-sync-progress-fill').css('width', progressPercent + '%');
+        $('.erp-sync-progress-text').text(statusText + ' (' + progressPercent + '%)');
+    }
+
+    /**
+     * Handle successful sync completion
+     */
+    function handleSyncSuccess($button, originalText, stats) {
+        syncInProgress = false;
+        
+        // Show success state
+        $button.removeClass('updating-message').addClass('button-primary');
+        
+        // Build result message
+        let resultMsg = 'Completed! ✅';
+        if (stats) {
+            resultMsg = 'Done: ';
+            if (stats.created) resultMsg += stats.created + ' created, ';
+            if (stats.updated) resultMsg += stats.updated + ' updated, ';
+            if (stats.skipped) resultMsg += stats.skipped + ' skipped, ';
+            if (stats.errors) resultMsg += stats.errors + ' errors, ';
+            if (stats.orphans_zeroed) resultMsg += stats.orphans_zeroed + ' orphans zeroed';
+            resultMsg = resultMsg.replace(/, $/, '') + ' ✅';
+        }
+        
+        $button.html(resultMsg);
+        
+        // Update progress bar to 100%
+        $('.erp-sync-progress-fill').css('width', '100%');
+        $('.erp-sync-progress-text').text('Completed!');
+        
+        // Reset after 3 seconds
+        setTimeout(function() {
+            $button.removeClass('button-primary').prop('disabled', false);
+            $button.text(originalText);
+            $button.css('min-width', '');
+            $('#erp-sync-progress-container').fadeOut();
+            stopProgressPolling();
+        }, 3000);
+    }
+
+    /**
+     * Handle sync error
+     */
+    function handleSyncError($button, originalText, errorMessage) {
+        syncInProgress = false;
+        
+        // Show error - revert immediately
+        $button.removeClass('updating-message');
+        $button.prop('disabled', false);
+        $button.text(originalText);
+        $button.css('min-width', '');
+        
+        $('#erp-sync-progress-container').fadeOut();
+        stopProgressPolling();
+        
+        alert('Error: ' + errorMessage);
     }
 
     // Quick Edit Functionality
@@ -363,7 +477,7 @@
         initConfirmations();
         initSingleProductUpdate();
         
-        console.log('ERP Sync Admin JS v1.4.0 loaded');
+        console.log('ERP Sync Admin JS v1.5.0 loaded');
     });
 
 })(jQuery);

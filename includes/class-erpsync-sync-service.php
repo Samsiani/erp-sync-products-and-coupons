@@ -57,6 +57,21 @@ class Sync_Service {
     const TRANSIENT_LOCK_EXPIRATION = 3600;
 
     /**
+     * Transient key prefix for cached stock data.
+     */
+    const TRANSIENT_STOCK_DATA_PREFIX = 'erpsync_temp_stock_';
+
+    /**
+     * Transient key prefix for cached catalog data.
+     */
+    const TRANSIENT_CATALOG_DATA_PREFIX = 'erpsync_temp_catalog_';
+
+    /**
+     * Cache expiration time in seconds (1 hour).
+     */
+    const TRANSIENT_CACHE_EXPIRATION = 3600;
+
+    /**
      * Whether hooks have been registered.
      *
      * @var bool
@@ -602,6 +617,412 @@ class Sync_Service {
                 delete_transient( self::TRANSIENT_LOCK_STOCK );
             }
         }
+    }
+
+    /**
+     * Step-based stock sync for AJAX batch processing.
+     *
+     * Handles 'init', 'process', and 'cleanup' steps for batch processing.
+     *
+     * @param string $step       Current step: 'init', 'process', or 'cleanup'.
+     * @param int    $offset     Current offset for batch processing.
+     * @param int    $batch_size Number of items to process per batch.
+     * @param string $session_id Unique session identifier.
+     * @return array Response data for the current step.
+     * @throws \Exception If step fails.
+     */
+    public function update_products_stock_step( string $step, int $offset, int $batch_size, string $session_id ): array {
+        $transient_key = self::TRANSIENT_STOCK_DATA_PREFIX . $session_id;
+
+        switch ( $step ) {
+            case 'init':
+                return $this->init_stock_sync( $session_id, $transient_key );
+
+            case 'process':
+                return $this->process_stock_batch_from_cache( $session_id, $transient_key, $offset, $batch_size );
+
+            case 'cleanup':
+                return $this->cleanup_stock_sync( $session_id, $transient_key );
+
+            default:
+                throw new \Exception( __( 'Invalid sync step', 'erp-sync' ) );
+        }
+    }
+
+    /**
+     * Initialize stock sync: fetch data from API and cache it.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for caching.
+     * @return array Response with total count.
+     * @throws \Exception If API call fails or sync already in progress.
+     */
+    private function init_stock_sync( string $session_id, string $transient_key ): array {
+        // Check if a stock sync is already in progress
+        if ( get_transient( self::TRANSIENT_LOCK_STOCK ) ) {
+            throw new \Exception( __( 'Sync already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        // Set the lock
+        set_transient( self::TRANSIENT_LOCK_STOCK, $session_id, self::TRANSIENT_LOCK_EXPIRATION );
+
+        Logger::instance()->log( 'Stock sync init step started', [
+            'session_id' => $session_id,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        // Fetch stock data from API
+        $rows = $this->api->fetch_products_stock();
+        $total = count( $rows );
+
+        // Store data in transient for batch processing
+        set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+
+        // Store session metadata
+        update_option( self::OPTION_ACTIVE_SESSION, [
+            'session_id' => $session_id,
+            'type'       => 'stock',
+            'started_at' => current_time( 'mysql' ),
+            'total'      => $total,
+        ] );
+
+        Logger::instance()->log( 'Stock sync init completed', [
+            'session_id' => $session_id,
+            'total'      => $total,
+        ] );
+
+        return [
+            'message' => __( 'Stock data fetched and cached', 'erp-sync' ),
+            'total'   => $total,
+            'step'    => 'init',
+        ];
+    }
+
+    /**
+     * Process a batch of stock items from cache.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @param int    $offset        Current offset.
+     * @param int    $batch_size    Number of items to process.
+     * @return array Response with batch stats.
+     * @throws \Exception If cached data is missing.
+     */
+    private function process_stock_batch_from_cache( string $session_id, string $transient_key, int $offset, int $batch_size ): array {
+        // Retrieve cached data
+        $rows = get_transient( $transient_key );
+
+        if ( false === $rows || ! is_array( $rows ) ) {
+            // Transient expired or missing - try to re-fetch
+            Logger::instance()->log( 'Stock cache missing, re-fetching data', [
+                'session_id' => $session_id,
+                'offset'     => $offset,
+            ] );
+
+            $rows = $this->api->fetch_products_stock();
+            set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+        }
+
+        $total = count( $rows );
+
+        // Get batch using array_slice
+        $batch = array_slice( $rows, $offset, $batch_size );
+
+        if ( empty( $batch ) ) {
+            // No more items to process
+            return [
+                'message'     => __( 'No more items to process', 'erp-sync' ),
+                'total'       => $total,
+                'next_offset' => $total,
+                'processed'   => 0,
+                'updated'     => 0,
+                'skipped'     => 0,
+                'errors'      => 0,
+                'step'        => 'process',
+            ];
+        }
+
+        // Process this batch
+        $stats = $this->process_stock_batch( $batch, $session_id );
+
+        // Memory management
+        $this->product_service->clear_cache();
+        $this->clear_memory_caches();
+
+        $next_offset = $offset + count( $batch );
+
+        // Update progress
+        $this->set_progress( $next_offset, $total, sprintf( 'Processing batch at offset %d', $offset ) );
+
+        Logger::instance()->log( 'Stock batch processed from cache', [
+            'session_id'  => $session_id,
+            'offset'      => $offset,
+            'batch_size'  => count( $batch ),
+            'next_offset' => $next_offset,
+            'updated'     => $stats['updated'],
+            'skipped'     => $stats['skipped'],
+            'errors'      => $stats['errors'],
+        ] );
+
+        return [
+            'message'     => sprintf( __( 'Processed batch at offset %d', 'erp-sync' ), $offset ),
+            'total'       => $total,
+            'next_offset' => $next_offset,
+            'processed'   => count( $batch ),
+            'updated'     => $stats['updated'] ?? 0,
+            'skipped'     => $stats['skipped'] ?? 0,
+            'errors'      => $stats['errors'] ?? 0,
+            'step'        => 'process',
+        ];
+    }
+
+    /**
+     * Cleanup stock sync: run orphan cleanup and delete transient.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @return array Response with cleanup stats.
+     */
+    private function cleanup_stock_sync( string $session_id, string $transient_key ): array {
+        Logger::instance()->log( 'Stock sync cleanup step started', [
+            'session_id' => $session_id,
+        ] );
+
+        // Orphan cleanup permanently disabled - products not in feed will not be set to out of stock
+        $orphan_count = 0;
+        Logger::instance()->log( 'Orphan cleanup disabled by configuration. Skipping.', [
+            'session_id' => $session_id,
+            'operation'  => 'stock_update_step',
+        ] );
+
+        // Delete the cached data transient
+        delete_transient( $transient_key );
+
+        // Release the lock
+        delete_transient( self::TRANSIENT_LOCK_STOCK );
+
+        // Clear active session
+        delete_option( self::OPTION_ACTIVE_SESSION );
+
+        // Update last sync time
+        update_option( self::OPTION_LAST_STOCK_SYNC, current_time( 'mysql' ) );
+
+        // Clear progress
+        $this->clear_progress();
+
+        Logger::instance()->log( 'Stock sync cleanup completed', [
+            'session_id'     => $session_id,
+            'orphans_zeroed' => $orphan_count,
+        ] );
+
+        return [
+            'message'        => __( 'Stock sync completed successfully', 'erp-sync' ),
+            'orphans_zeroed' => $orphan_count,
+            'step'           => 'cleanup',
+        ];
+    }
+
+    /**
+     * Step-based catalog sync for AJAX batch processing.
+     *
+     * Handles 'init', 'process', and 'cleanup' steps for batch processing.
+     *
+     * @param string $step       Current step: 'init', 'process', or 'cleanup'.
+     * @param int    $offset     Current offset for batch processing.
+     * @param int    $batch_size Number of items to process per batch.
+     * @param string $session_id Unique session identifier.
+     * @return array Response data for the current step.
+     * @throws \Exception If step fails.
+     */
+    public function import_products_catalog_step( string $step, int $offset, int $batch_size, string $session_id ): array {
+        $transient_key = self::TRANSIENT_CATALOG_DATA_PREFIX . $session_id;
+
+        switch ( $step ) {
+            case 'init':
+                return $this->init_catalog_sync( $session_id, $transient_key );
+
+            case 'process':
+                return $this->process_catalog_batch_from_cache( $session_id, $transient_key, $offset, $batch_size );
+
+            case 'cleanup':
+                return $this->cleanup_catalog_sync( $session_id, $transient_key );
+
+            default:
+                throw new \Exception( __( 'Invalid sync step', 'erp-sync' ) );
+        }
+    }
+
+    /**
+     * Initialize catalog sync: fetch data from API and cache it.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for caching.
+     * @return array Response with total count.
+     * @throws \Exception If API call fails or sync already in progress.
+     */
+    private function init_catalog_sync( string $session_id, string $transient_key ): array {
+        // Check if a catalog sync is already in progress
+        if ( get_transient( self::TRANSIENT_LOCK_CATALOG ) ) {
+            throw new \Exception( __( 'Sync already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        // Set the lock
+        set_transient( self::TRANSIENT_LOCK_CATALOG, $session_id, self::TRANSIENT_LOCK_EXPIRATION );
+
+        Logger::instance()->log( 'Catalog sync init step started', [
+            'session_id' => $session_id,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        // Fetch catalog data from API
+        $rows = $this->api->fetch_products_catalog();
+        $total = count( $rows );
+
+        // Store data in transient for batch processing
+        set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+
+        // Store session metadata
+        update_option( self::OPTION_ACTIVE_SESSION, [
+            'session_id' => $session_id,
+            'type'       => 'catalog',
+            'started_at' => current_time( 'mysql' ),
+            'total'      => $total,
+        ] );
+
+        Logger::instance()->log( 'Catalog sync init completed', [
+            'session_id' => $session_id,
+            'total'      => $total,
+        ] );
+
+        return [
+            'message' => __( 'Catalog data fetched and cached', 'erp-sync' ),
+            'total'   => $total,
+            'step'    => 'init',
+        ];
+    }
+
+    /**
+     * Process a batch of catalog items from cache.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @param int    $offset        Current offset.
+     * @param int    $batch_size    Number of items to process.
+     * @return array Response with batch stats.
+     * @throws \Exception If cached data is missing.
+     */
+    private function process_catalog_batch_from_cache( string $session_id, string $transient_key, int $offset, int $batch_size ): array {
+        // Retrieve cached data
+        $rows = get_transient( $transient_key );
+
+        if ( false === $rows || ! is_array( $rows ) ) {
+            // Transient expired or missing - try to re-fetch
+            Logger::instance()->log( 'Catalog cache missing, re-fetching data', [
+                'session_id' => $session_id,
+                'offset'     => $offset,
+            ] );
+
+            $rows = $this->api->fetch_products_catalog();
+            set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+        }
+
+        $total = count( $rows );
+
+        // Get batch using array_slice
+        $batch = array_slice( $rows, $offset, $batch_size );
+
+        if ( empty( $batch ) ) {
+            // No more items to process
+            return [
+                'message'     => __( 'No more items to process', 'erp-sync' ),
+                'total'       => $total,
+                'next_offset' => $total,
+                'processed'   => 0,
+                'created'     => 0,
+                'updated'     => 0,
+                'errors'      => 0,
+                'step'        => 'process',
+            ];
+        }
+
+        // Process this batch
+        $stats = $this->product_service->sync_catalog_batch( $batch, $session_id );
+
+        // Memory management
+        $this->product_service->clear_cache();
+        $this->clear_memory_caches();
+
+        $next_offset = $offset + count( $batch );
+
+        // Update progress
+        $this->set_progress( $next_offset, $total, sprintf( 'Processing batch at offset %d', $offset ) );
+
+        Logger::instance()->log( 'Catalog batch processed from cache', [
+            'session_id'  => $session_id,
+            'offset'      => $offset,
+            'batch_size'  => count( $batch ),
+            'next_offset' => $next_offset,
+            'created'     => $stats['created'],
+            'updated'     => $stats['updated'],
+            'errors'      => $stats['errors'],
+        ] );
+
+        return [
+            'message'     => sprintf( __( 'Processed batch at offset %d', 'erp-sync' ), $offset ),
+            'total'       => $total,
+            'next_offset' => $next_offset,
+            'processed'   => count( $batch ),
+            'created'     => $stats['created'] ?? 0,
+            'updated'     => $stats['updated'] ?? 0,
+            'errors'      => $stats['errors'] ?? 0,
+            'step'        => 'process',
+        ];
+    }
+
+    /**
+     * Cleanup catalog sync: run orphan cleanup and delete transient.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @return array Response with cleanup stats.
+     */
+    private function cleanup_catalog_sync( string $session_id, string $transient_key ): array {
+        Logger::instance()->log( 'Catalog sync cleanup step started', [
+            'session_id' => $session_id,
+        ] );
+
+        // Orphan cleanup permanently disabled - products not in feed will not be set to out of stock
+        $orphan_count = 0;
+        Logger::instance()->log( 'Orphan cleanup disabled by configuration. Skipping.', [
+            'session_id' => $session_id,
+            'operation'  => 'catalog_import_step',
+        ] );
+
+        // Delete the cached data transient
+        delete_transient( $transient_key );
+
+        // Release the lock
+        delete_transient( self::TRANSIENT_LOCK_CATALOG );
+
+        // Clear active session
+        delete_option( self::OPTION_ACTIVE_SESSION );
+
+        // Update last sync time
+        update_option( self::OPTION_LAST_PRODUCTS_SYNC, current_time( 'mysql' ) );
+
+        // Clear progress
+        $this->clear_progress();
+
+        Logger::instance()->log( 'Catalog sync cleanup completed', [
+            'session_id'     => $session_id,
+            'orphans_zeroed' => $orphan_count,
+        ] );
+
+        return [
+            'message'        => __( 'Catalog sync completed successfully', 'erp-sync' ),
+            'orphans_zeroed' => $orphan_count,
+            'step'           => 'cleanup',
+        ];
     }
 
     /**
