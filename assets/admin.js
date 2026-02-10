@@ -155,7 +155,7 @@
         $.ajax({
             url: erpSyncAdmin.ajaxurl,
             type: 'POST',
-            timeout: 120000, // 2 minutes timeout per request
+            timeout: 60000, // 1 minute timeout per batch request
             data: {
                 action: action,
                 nonce: erpSyncAdmin.nonce,
