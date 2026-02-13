@@ -511,6 +511,7 @@ class API_Client {
                 'Mechanism'   => $this->sanitize_string( $row['Mechanism'] ?? '' ),
                 'Size'        => $this->sanitize_string( $row['Size'] ?? '' ),
                 'Bijouterie'  => $this->sanitize_string( $row['Bijouterie'] ?? '' ),
+                'Branch'      => $this->sanitize_string( $row['Branch'] ?? $row['Shop'] ?? '' ),
             ];
         }
 

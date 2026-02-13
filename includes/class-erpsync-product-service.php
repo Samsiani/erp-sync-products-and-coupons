@@ -430,8 +430,8 @@ class Product_Service {
                     $is_new  = true;
                 }
 
-                // Set product data
-                $this->set_product_catalog_data( $product, $row, $attribute_mapping, $session_id );
+                // Set product data (new products are created as draft)
+                $this->set_product_catalog_data( $product, $row, $attribute_mapping, $session_id, $is_new );
 
                 // Save product
                 $saved_id = $product->save();
@@ -482,12 +482,15 @@ class Product_Service {
      * @param array       $row               Product data row from IBS API.
      * @param array       $attribute_mapping Attribute mapping configuration.
      * @param string      $session_id        Optional unique session identifier for tracking sync.
+     * @param bool        $is_new            Whether this is a newly created product.
      */
-    private function set_product_catalog_data( \WC_Product $product, array $row, array $attribute_mapping, string $session_id = '' ): void {
+    private function set_product_catalog_data( \WC_Product $product, array $row, array $attribute_mapping, string $session_id = '', bool $is_new = false ): void {
         // Set basic product data
         $product->set_name( sanitize_text_field( $row['ProductName'] ?? '' ) );
         $product->set_sku( sanitize_text_field( $row['VendorCode'] ?? '' ) );
-        $product->set_status( 'publish' );
+
+        // New products are created as draft so they can be reviewed before publishing
+        $product->set_status( $is_new ? 'draft' : 'publish' );
 
         // Mark as ERP-managed product
         $product->update_meta_data( '_erp_sync_managed', 1 );
@@ -571,9 +574,70 @@ class Product_Service {
     public const OPTION_DETECTED_BRANCHES = 'erp_sync_detected_branches';
 
     /**
-     * Option key for storing branch settings (alias, excluded).
+     * Option key for storing branch settings (alias, hide_from_frontend).
      */
     public const OPTION_BRANCH_SETTINGS = 'erp_sync_branch_settings';
+
+    /**
+     * Get list of active branch names (branches not marked as hide_from_frontend).
+     *
+     * Reads branch settings and returns only the branch names where
+     * hide_from_frontend is NOT enabled. Supports backward compatibility
+     * with the legacy 'excluded' key.
+     *
+     * @return array List of active branch names.
+     */
+    public function get_active_branches(): array {
+        $detected_branches = get_option( self::OPTION_DETECTED_BRANCHES, [] );
+        if ( ! is_array( $detected_branches ) ) {
+            $detected_branches = [];
+        }
+
+        $branch_settings = get_option( self::OPTION_BRANCH_SETTINGS, [] );
+        if ( ! is_array( $branch_settings ) ) {
+            $branch_settings = [];
+        }
+
+        $active = [];
+        foreach ( $detected_branches as $branch_name ) {
+            $settings = $branch_settings[ $branch_name ] ?? [];
+            // Support both new 'hide_from_frontend' key and legacy 'excluded' key
+            $is_hidden = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
+            if ( ! $is_hidden ) {
+                $active[] = $branch_name;
+            }
+        }
+
+        return $active;
+    }
+
+    /**
+     * Get list of hidden branch names (branches marked as hide_from_frontend).
+     *
+     * @return array List of hidden branch names.
+     */
+    public function get_hidden_branches(): array {
+        $detected_branches = get_option( self::OPTION_DETECTED_BRANCHES, [] );
+        if ( ! is_array( $detected_branches ) ) {
+            $detected_branches = [];
+        }
+
+        $branch_settings = get_option( self::OPTION_BRANCH_SETTINGS, [] );
+        if ( ! is_array( $branch_settings ) ) {
+            $branch_settings = [];
+        }
+
+        $hidden = [];
+        foreach ( $detected_branches as $branch_name ) {
+            $settings = $branch_settings[ $branch_name ] ?? [];
+            $is_hidden = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
+            if ( $is_hidden ) {
+                $hidden[] = $branch_name;
+            }
+        }
+
+        return $hidden;
+    }
 
     /**
      * Warehouse locations to exclude from stock calculations.
@@ -1033,9 +1097,9 @@ class Product_Service {
                 continue;
             }
 
-            // Check if this branch is excluded in settings
+            // Check if this branch is hidden from frontend (supports both new and legacy key)
             $settings = $branch_settings[ $location ] ?? [];
-            if ( ! empty( $settings['excluded'] ) ) {
+            if ( ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] ) ) {
                 continue;
             }
 

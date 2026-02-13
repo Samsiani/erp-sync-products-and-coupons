@@ -175,9 +175,9 @@ class Frontend {
                 continue;
             }
 
-            // Check if this branch is excluded
+            // Check if this branch is hidden from frontend (supports both new and legacy key)
             $settings = $branch_settings[ $location ] ?? [];
-            if ( ! empty( $settings['excluded'] ) ) {
+            if ( ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] ) ) {
                 continue;
             }
 
