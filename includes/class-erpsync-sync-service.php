@@ -351,6 +351,38 @@ class Sync_Service {
 
             // Fetch catalog data from API
             $rows = $this->api->fetch_products_catalog();
+
+            // Branch filtering: only process products from active (non-hidden) branches
+            $active_branches = $this->product_service->get_active_branches();
+            $hidden_branches = $this->product_service->get_hidden_branches();
+
+            if ( ! empty( $hidden_branches ) ) {
+                $pre_filter_count = count( $rows );
+
+                // Filter out products that belong exclusively to hidden branches
+                // The 'Branch' field is populated from the SOAP response if available
+                $rows = array_values( array_filter( $rows, function ( array $row ) use ( $hidden_branches ): bool {
+                    $branch = trim( $row['Branch'] ?? '' );
+                    // If no branch data in catalog row, keep the product (cannot filter)
+                    if ( empty( $branch ) ) {
+                        return true;
+                    }
+                    // Exclude products that belong to a hidden branch
+                    return ! in_array( $branch, $hidden_branches, true );
+                } ) );
+
+                $filtered_count = $pre_filter_count - count( $rows );
+
+                Logger::instance()->log( 'Catalog branch filtering applied', [
+                    'active_branches'  => $active_branches,
+                    'hidden_branches'  => $hidden_branches,
+                    'pre_filter_count' => $pre_filter_count,
+                    'post_filter_count'=> count( $rows ),
+                    'filtered_out'     => $filtered_count,
+                    'session_id'       => $session_id,
+                ] );
+            }
+
             $total = count( $rows );
 
             $this->set_progress( 0, $total, 'Processing catalog batches...' );
@@ -876,6 +908,34 @@ class Sync_Service {
 
         // Fetch catalog data from API
         $rows = $this->api->fetch_products_catalog();
+
+        // Branch filtering: only process products from active (non-hidden) branches
+        $hidden_branches = $this->product_service->get_hidden_branches();
+
+        if ( ! empty( $hidden_branches ) ) {
+            $pre_filter_count = count( $rows );
+
+            // Filter out products that belong exclusively to hidden branches
+            // The 'Branch' field is populated from the SOAP response if available
+            $rows = array_values( array_filter( $rows, function ( array $row ) use ( $hidden_branches ): bool {
+                $branch = trim( $row['Branch'] ?? '' );
+                // If no branch data in catalog row, keep the product (cannot filter)
+                if ( empty( $branch ) ) {
+                    return true;
+                }
+                // Exclude products that belong to a hidden branch
+                return ! in_array( $branch, $hidden_branches, true );
+            } ) );
+
+            Logger::instance()->log( 'Catalog branch filtering applied (init step)', [
+                'hidden_branches'  => $hidden_branches,
+                'pre_filter_count' => $pre_filter_count,
+                'post_filter_count'=> count( $rows ),
+                'filtered_out'     => $pre_filter_count - count( $rows ),
+                'session_id'       => $session_id,
+            ] );
+        }
+
         $total = count( $rows );
 
         // Store data in transient for batch processing

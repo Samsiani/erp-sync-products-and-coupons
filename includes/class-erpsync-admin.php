@@ -352,12 +352,12 @@ class Admin {
                     continue;
                 }
 
-                $alias    = sanitize_text_field( $data['alias'] ?? '' );
-                $excluded = ! empty( $data['excluded'] );
+                $alias              = sanitize_text_field( $data['alias'] ?? '' );
+                $hide_from_frontend = ! empty( $data['hide_from_frontend'] );
 
                 $branch_settings[ $original_name ] = [
-                    'alias'    => $alias,
-                    'excluded' => $excluded,
+                    'alias'              => $alias,
+                    'hide_from_frontend' => $hide_from_frontend,
                 ];
             }
         }
@@ -1314,7 +1314,8 @@ class Admin {
                                 <?php foreach ( $detected_branches as $branch_name ) : 
                                     $settings = $branch_settings[ $branch_name ] ?? [];
                                     $alias    = $settings['alias'] ?? '';
-                                    $excluded = ! empty( $settings['excluded'] );
+                                    // Support both new 'hide_from_frontend' key and legacy 'excluded' key
+                                    $hide_from_frontend = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
                                     $branch_hash = md5( $branch_name );
                                 ?>
                                     <tr>
@@ -1332,9 +1333,9 @@ class Admin {
                                         <td>
                                             <label>
                                                 <input type="checkbox" 
-                                                       name="branches[<?php echo esc_attr( $branch_hash ); ?>][excluded]" 
+                                                       name="branches[<?php echo esc_attr( $branch_hash ); ?>][hide_from_frontend]" 
                                                        value="1" 
-                                                       <?php checked( $excluded ); ?>>
+                                                       <?php checked( $hide_from_frontend ); ?>>
                                                 <?php _e('Hide from frontend', 'erp-sync'); ?>
                                             </label>
                                         </td>
@@ -1360,7 +1361,7 @@ class Admin {
                             $preview_count = 0;
                             foreach ( $detected_branches as $branch_name ) :
                                 $settings = $branch_settings[ $branch_name ] ?? [];
-                                if ( ! empty( $settings['excluded'] ) ) continue;
+                                if ( ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] ) ) continue;
                                 if ( ++$preview_count > 3 ) break; // Show max 3 branches in preview
                                 $display_name = ! empty( $settings['alias'] ) ? $settings['alias'] : $branch_name;
                             ?>
