@@ -361,7 +361,7 @@ class Sync_Service {
 
                 // Filter out products that belong exclusively to hidden branches
                 // The 'Branch' field is populated from the SOAP response if available
-                $rows = array_values( array_filter( $rows, function ( array $row ) use ( $active_branches, $hidden_branches ): bool {
+                $rows = array_values( array_filter( $rows, function ( array $row ) use ( $hidden_branches ): bool {
                     $branch = trim( $row['Branch'] ?? '' );
                     // If no branch data in catalog row, keep the product (cannot filter)
                     if ( empty( $branch ) ) {

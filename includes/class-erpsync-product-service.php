@@ -588,27 +588,7 @@ class Product_Service {
      * @return array List of active branch names.
      */
     public function get_active_branches(): array {
-        $detected_branches = get_option( self::OPTION_DETECTED_BRANCHES, [] );
-        if ( ! is_array( $detected_branches ) ) {
-            $detected_branches = [];
-        }
-
-        $branch_settings = get_option( self::OPTION_BRANCH_SETTINGS, [] );
-        if ( ! is_array( $branch_settings ) ) {
-            $branch_settings = [];
-        }
-
-        $active = [];
-        foreach ( $detected_branches as $branch_name ) {
-            $settings = $branch_settings[ $branch_name ] ?? [];
-            // Support both new 'hide_from_frontend' key and legacy 'excluded' key
-            $is_hidden = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
-            if ( ! $is_hidden ) {
-                $active[] = $branch_name;
-            }
-        }
-
-        return $active;
+        return $this->filter_branches_by_visibility( false );
     }
 
     /**
@@ -617,6 +597,16 @@ class Product_Service {
      * @return array List of hidden branch names.
      */
     public function get_hidden_branches(): array {
+        return $this->filter_branches_by_visibility( true );
+    }
+
+    /**
+     * Filter branches by their hide_from_frontend visibility setting.
+     *
+     * @param bool $hidden If true, returns hidden branches; if false, returns active branches.
+     * @return array Filtered list of branch names.
+     */
+    private function filter_branches_by_visibility( bool $hidden ): array {
         $detected_branches = get_option( self::OPTION_DETECTED_BRANCHES, [] );
         if ( ! is_array( $detected_branches ) ) {
             $detected_branches = [];
@@ -627,16 +617,17 @@ class Product_Service {
             $branch_settings = [];
         }
 
-        $hidden = [];
+        $result = [];
         foreach ( $detected_branches as $branch_name ) {
             $settings = $branch_settings[ $branch_name ] ?? [];
+            // Support both new 'hide_from_frontend' key and legacy 'excluded' key
             $is_hidden = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
-            if ( $is_hidden ) {
-                $hidden[] = $branch_name;
+            if ( $is_hidden === $hidden ) {
+                $result[] = $branch_name;
             }
         }
 
-        return $hidden;
+        return $result;
     }
 
     /**
