@@ -601,6 +601,10 @@ class Admin {
             case 'is_deleted':
                 update_post_meta( $coupon_id, '_erp_sync_is_deleted', $value === 'yes' ? 'yes' : 'no' );
                 break;
+            case 'dob':
+                update_post_meta( $coupon_id, '_erp_sync_dob', sanitize_text_field( $value ) );
+                update_post_meta( $coupon_id, '_erp_sync_dob_is_manual', 'yes' );
+                break;
             default:
                 wp_send_json_error( [ 'message' => 'Invalid field' ] );
         }
@@ -1502,7 +1506,10 @@ class Admin {
                 break;
                 
             case 'erp_sync_dob':
-                echo esc_html( get_post_meta( $post_id, '_erp_sync_dob', true ) );
+                $dob_value = get_post_meta( $post_id, '_erp_sync_dob', true );
+                echo '<span class="erp-sync-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="dob">';
+                echo esc_html( $dob_value );
+                echo '</span>';
                 break;
         }
     }

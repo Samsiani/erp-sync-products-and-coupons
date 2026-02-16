@@ -331,6 +331,9 @@
             } else if (field === 'base_discount') {
                 input = $('<input type="number" min="0" max="100" />');
                 input.val(parseInt(originalValue));
+            } else if (field === 'dob') {
+                input = $('<input type="date" />');
+                input.val(originalValue);
             } else {
                 return;
             }
