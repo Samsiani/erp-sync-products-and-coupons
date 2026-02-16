@@ -463,7 +463,7 @@ class API_Client {
                 'Name'               => $row['Name'] ?? '',
                 'MobileNumber'       => $row['MobileNumber'] ?? '',
                 'DateOfBirth'        => $this->normalize_date_string( $row['DateOfBirth'] ?? '' ),
-                'CardCode'           => $row['CardCode'] ?? '',
+                'CardCode'           => trim( (string) ( $row['CardCode'] ?? '' ) ),
                 'DiscountPercentage' => $this->normalize_discount( $row['DiscountPercentage'] ?? 0 ),
                 'IsDeleted'          => $this->to_bool( $row['IsDeleted'] ?? false ),
             ];
