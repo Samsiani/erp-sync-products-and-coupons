@@ -268,10 +268,21 @@ class API_Client {
                         $count = count( $cards );
                         
                         // Merge cards, deduplicating by CardCode (last seen wins)
+                        $duplicates_count = 0;
                         foreach ( $cards as $card ) {
                             if ( ! empty( $card['CardCode'] ) ) {
+                                if ( isset( $all_cards[ $card['CardCode'] ] ) ) {
+                                    $duplicates_count++;
+                                }
                                 $all_cards[ $card['CardCode'] ] = $card;
                             }
+                        }
+                        
+                        if ( $duplicates_count > 0 && $this->debug ) {
+                            Logger::instance()->log( 'InformationCards duplicates detected', [
+                                'params'            => $params,
+                                'duplicates_count'  => $duplicates_count
+                            ] );
                         }
                         
                         $successful_params_list[] = $params;
@@ -309,7 +320,7 @@ class API_Client {
                     $cards = $this->parse_information_cards( $fallback_response );
                     $row_count = count( $cards );
                     $last_response = $fallback_response;
-                    $successful_params_list[] = $fallback_params;
+                    // Note: Not adding fallback_params to successful_params_list since it had no data
                 } else {
                     throw $last_exception ?? new \RuntimeException( 'All parameter attempts failed' );
                 }
