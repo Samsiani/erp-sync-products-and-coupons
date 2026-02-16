@@ -1412,7 +1412,9 @@ class Sync_Service {
         update_post_meta( $coupon_id, '_erp_sync_inn', sanitize_text_field( $card['Inn'] ?? '' ) );
         update_post_meta( $coupon_id, '_erp_sync_name', sanitize_text_field( $card['Name'] ?? '' ) );
         update_post_meta( $coupon_id, '_erp_sync_mobile', sanitize_text_field( $card['MobileNumber'] ?? '' ) );
-        update_post_meta( $coupon_id, '_erp_sync_dob', sanitize_text_field( $card['DateOfBirth'] ?? '' ) );
+        if ( get_post_meta( $coupon_id, '_erp_sync_dob_is_manual', true ) !== 'yes' ) {
+            update_post_meta( $coupon_id, '_erp_sync_dob', sanitize_text_field( $card['DateOfBirth'] ?? '' ) );
+        }
         update_post_meta( $coupon_id, '_erp_sync_is_deleted', ! empty( $card['IsDeleted'] ) ? 'yes' : 'no' );
         update_post_meta( $coupon_id, '_erp_sync_synced_at', current_time( 'mysql' ) );
         update_post_meta( $coupon_id, '_erp_sync_last_sync_user', wp_get_current_user()->user_login ?? 'system' );
