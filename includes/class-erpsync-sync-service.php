@@ -67,6 +67,16 @@ class Sync_Service {
     const TRANSIENT_CATALOG_DATA_PREFIX = 'erpsync_temp_catalog_';
 
     /**
+     * Transient key for coupons sync lock.
+     */
+    const TRANSIENT_LOCK_COUPONS = 'erp_sync_lock_coupons';
+
+    /**
+     * Transient key prefix for cached coupons data.
+     */
+    const TRANSIENT_COUPONS_DATA_PREFIX = 'erpsync_temp_coupons_';
+
+    /**
      * Cache expiration time in seconds (1 hour).
      */
     const TRANSIENT_CACHE_EXPIRATION = 3600;
@@ -1083,6 +1093,294 @@ class Sync_Service {
             'orphans_zeroed' => $orphan_count,
             'step'           => 'cleanup',
         ];
+    }
+
+    /**
+     * Step-based coupons sync for AJAX batch processing.
+     *
+     * Handles 'init', 'process', and 'cleanup' steps for batch processing.
+     *
+     * @param string $step       Current step: 'init', 'process', or 'cleanup'.
+     * @param int    $offset     Current offset for batch processing.
+     * @param int    $batch_size Number of items to process per batch.
+     * @param string $session_id Unique session identifier.
+     * @return array Response data for the current step.
+     * @throws \Exception If step fails.
+     */
+    public function sync_coupons_step( string $step, int $offset, int $batch_size, string $session_id ): array {
+        $transient_key = self::TRANSIENT_COUPONS_DATA_PREFIX . $session_id;
+
+        switch ( $step ) {
+            case 'init':
+                return $this->init_coupons_sync( $session_id, $transient_key );
+
+            case 'process':
+                return $this->process_coupons_batch_from_cache( $session_id, $transient_key, $offset, $batch_size );
+
+            case 'cleanup':
+                return $this->cleanup_coupons_sync( $session_id, $transient_key );
+
+            default:
+                throw new \Exception( __( 'Invalid sync step', 'erp-sync' ) );
+        }
+    }
+
+    /**
+     * Initialize coupons sync: fetch data from API and cache it.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for caching.
+     * @return array Response with total count.
+     * @throws \Exception If API call fails or sync already in progress.
+     */
+    private function init_coupons_sync( string $session_id, string $transient_key ): array {
+        // Check if a coupons sync is already in progress
+        if ( get_transient( self::TRANSIENT_LOCK_COUPONS ) ) {
+            throw new \Exception( __( 'Sync already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        // Set the lock
+        set_transient( self::TRANSIENT_LOCK_COUPONS, $session_id, self::TRANSIENT_LOCK_EXPIRATION );
+
+        Logger::instance()->log( 'Coupons sync init step started', [
+            'session_id' => $session_id,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        // Fetch card data from API
+        $cards = $this->api->fetch_cards_remote();
+        $total = count( $cards );
+
+        // Store data in transient for batch processing
+        set_transient( $transient_key, $cards, self::TRANSIENT_CACHE_EXPIRATION );
+
+        // Store session metadata
+        update_option( self::OPTION_ACTIVE_SESSION, [
+            'session_id' => $session_id,
+            'type'       => 'coupons',
+            'started_at' => current_time( 'mysql' ),
+            'total'      => $total,
+        ] );
+
+        Logger::instance()->log( 'Coupons sync init completed', [
+            'session_id' => $session_id,
+            'total'      => $total,
+        ] );
+
+        return [
+            'message' => __( 'Coupon data fetched and cached', 'erp-sync' ),
+            'total'   => $total,
+            'step'    => 'init',
+        ];
+    }
+
+    /**
+     * Process a batch of coupon items from cache.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @param int    $offset        Current offset.
+     * @param int    $batch_size    Number of items to process.
+     * @return array Response with batch stats.
+     * @throws \Exception If cached data is missing.
+     */
+    private function process_coupons_batch_from_cache( string $session_id, string $transient_key, int $offset, int $batch_size ): array {
+        // Retrieve cached data
+        $cards = get_transient( $transient_key );
+
+        if ( false === $cards || ! is_array( $cards ) ) {
+            // Transient expired or missing - try to re-fetch
+            Logger::instance()->log( 'Coupons cache missing, re-fetching data', [
+                'session_id' => $session_id,
+                'offset'     => $offset,
+            ] );
+
+            $cards = $this->api->fetch_cards_remote();
+            set_transient( $transient_key, $cards, self::TRANSIENT_CACHE_EXPIRATION );
+        }
+
+        $total = count( $cards );
+
+        // Get batch using array_slice
+        $batch = array_slice( $cards, $offset, $batch_size );
+
+        if ( empty( $batch ) ) {
+            // No more items to process
+            return [
+                'message'     => __( 'No more items to process', 'erp-sync' ),
+                'total'       => $total,
+                'next_offset' => $total,
+                'processed'   => 0,
+                'created'     => 0,
+                'updated'     => 0,
+                'errors'      => 0,
+                'step'        => 'process',
+            ];
+        }
+
+        $created = 0;
+        $updated = 0;
+        $errors  = 0;
+
+        foreach ( $batch as $card ) {
+            if ( empty( $card['CardCode'] ) ) {
+                continue;
+            }
+
+            try {
+                $formatted = erp_sync_format_code( $card['CardCode'] );
+                $exists    = $this->coupon_exists( $formatted );
+
+                $this->create_or_update_coupon( $card, $exists, true );
+
+                if ( $exists ) {
+                    $updated++;
+                } else {
+                    $created++;
+                }
+            } catch ( \Throwable $e ) {
+                $errors++;
+                Logger::instance()->log( 'Coupon batch item error', [
+                    'session_id' => $session_id,
+                    'card_code'  => $card['CardCode'] ?? '',
+                    'error'      => $e->getMessage(),
+                ] );
+            }
+        }
+
+        // Memory management
+        $this->clear_memory_caches();
+
+        $next_offset = $offset + count( $batch );
+
+        // Update progress
+        $this->set_progress( $next_offset, $total, sprintf( 'Processing batch at offset %d', $offset ) );
+
+        Logger::instance()->log( 'Coupons batch processed from cache', [
+            'session_id'  => $session_id,
+            'offset'      => $offset,
+            'batch_size'  => count( $batch ),
+            'next_offset' => $next_offset,
+            'created'     => $created,
+            'updated'     => $updated,
+            'errors'      => $errors,
+        ] );
+
+        return [
+            'message'     => sprintf( __( 'Processed batch at offset %d', 'erp-sync' ), $offset ),
+            'total'       => $total,
+            'next_offset' => $next_offset,
+            'processed'   => count( $batch ),
+            'created'     => $created,
+            'updated'     => $updated,
+            'errors'      => $errors,
+            'step'        => 'process',
+        ];
+    }
+
+    /**
+     * Cleanup coupons sync: delete transient and update last sync time.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @return array Response with cleanup stats.
+     */
+    private function cleanup_coupons_sync( string $session_id, string $transient_key ): array {
+        Logger::instance()->log( 'Coupons sync cleanup step started', [
+            'session_id' => $session_id,
+        ] );
+
+        // Delete the cached data transient
+        delete_transient( $transient_key );
+
+        // Release the lock
+        delete_transient( self::TRANSIENT_LOCK_COUPONS );
+
+        // Clear active session
+        delete_option( self::OPTION_ACTIVE_SESSION );
+
+        // Update last sync time
+        update_option( self::OPTION_LAST_SYNC, current_time( 'mysql' ) );
+
+        // Clear progress
+        $this->clear_progress();
+
+        Logger::instance()->log( 'Coupons sync cleanup completed', [
+            'session_id' => $session_id,
+        ] );
+
+        return [
+            'message' => __( 'Coupons sync completed successfully', 'erp-sync' ),
+            'step'    => 'cleanup',
+        ];
+    }
+
+    /**
+     * Sync a single coupon from the ERP.
+     *
+     * Fetches all cards from the API and finds the matching card by coupon code,
+     * then creates or updates the coupon accordingly.
+     *
+     * @param int $coupon_id The WooCommerce coupon post ID.
+     * @return bool True on success, false if not found.
+     * @throws \Exception If the coupon does not exist or API call fails.
+     */
+    public function sync_single_coupon( int $coupon_id ): bool {
+        $coupon_post = get_post( $coupon_id );
+
+        if ( ! $coupon_post || $coupon_post->post_type !== 'shop_coupon' ) {
+            throw new \Exception( __( 'Coupon not found', 'erp-sync' ) );
+        }
+
+        $coupon_code = $coupon_post->post_title;
+
+        Logger::instance()->log( 'Starting single coupon sync', [
+            'coupon_id'   => $coupon_id,
+            'coupon_code' => $coupon_code,
+            'user'        => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        try {
+            // Fetch all cards from API and find the matching one
+            $cards = $this->api->fetch_cards_remote();
+
+            foreach ( $cards as $card ) {
+                if ( empty( $card['CardCode'] ) ) {
+                    continue;
+                }
+
+                $formatted = erp_sync_format_code( $card['CardCode'] );
+
+                if ( strtolower( $formatted ) === strtolower( $coupon_code ) ) {
+                    $this->create_or_update_coupon( $card, true, true );
+
+                    Logger::instance()->log( 'Single coupon sync completed', [
+                        'coupon_id'   => $coupon_id,
+                        'coupon_code' => $coupon_code,
+                        'user'        => wp_get_current_user()->user_login ?? 'system',
+                    ] );
+
+                    return true;
+                }
+            }
+
+            Logger::instance()->log( 'Single coupon sync: card not found in ERP', [
+                'coupon_id'   => $coupon_id,
+                'coupon_code' => $coupon_code,
+                'user'        => wp_get_current_user()->user_login ?? 'system',
+            ] );
+
+            return false;
+
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'Single coupon sync failed', [
+                'coupon_id'   => $coupon_id,
+                'coupon_code' => $coupon_code,
+                'error'       => $e->getMessage(),
+                'user'        => wp_get_current_user()->user_login ?? 'system',
+            ] );
+            throw $e;
+        }
     }
 
     /**

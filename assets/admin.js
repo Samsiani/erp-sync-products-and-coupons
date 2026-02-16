@@ -471,6 +471,64 @@
         });
     }
 
+    // Single Coupon ERP Sync Update
+    function initSingleCouponUpdate() {
+        $(document).on('click', '.erp-sync-single-coupon-update', function(e) {
+            e.preventDefault();
+            
+            const $button = $(this);
+            const couponId = $button.data('id');
+            const originalText = $button.text();
+            
+            // Store original width to prevent layout jump
+            const originalWidth = $button.outerWidth();
+            $button.css('min-width', originalWidth + 'px');
+            
+            // Disable button and show loading state with custom spinner
+            $button.prop('disabled', true).addClass('updating-message');
+            $button.html(originalText + ' <span class="erp-sync-loading"></span>');
+            
+            $.ajax({
+                url: erpSyncAdmin.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'erp_sync_single_coupon_update',
+                    nonce: erpSyncAdmin.nonce,
+                    coupon_id: couponId
+                },
+                success: function(response) {
+                    if (response.success) {
+                        // Show success state
+                        $button.removeClass('updating-message').addClass('button-primary');
+                        $button.html('Synced! ✅');
+                        
+                        // Reset after 2 seconds
+                        setTimeout(function() {
+                            $button.removeClass('button-primary').prop('disabled', false);
+                            $button.text(originalText);
+                            $button.css('min-width', '');
+                        }, 2000);
+                    } else {
+                        // Show error - revert immediately
+                        $button.removeClass('updating-message');
+                        $button.prop('disabled', false);
+                        $button.text(originalText);
+                        $button.css('min-width', '');
+                        alert('Error: ' + (response.data.message || 'Unknown error'));
+                    }
+                },
+                error: function(xhr, status, error) {
+                    // Show error - revert immediately
+                    $button.removeClass('updating-message');
+                    $button.prop('disabled', false);
+                    $button.text(originalText);
+                    $button.css('min-width', '');
+                    alert('AJAX Error: ' + error);
+                }
+            });
+        });
+    }
+
     // Initialize on document ready
     $(document).ready(function() {
         initTabs();
@@ -479,6 +537,7 @@
         initQuickEdit();
         initConfirmations();
         initSingleProductUpdate();
+        initSingleCouponUpdate();
         
         console.log('ERP Sync Admin JS v1.5.0 loaded');
     });
