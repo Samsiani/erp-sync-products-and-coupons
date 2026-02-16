@@ -54,6 +54,10 @@ class Admin {
         add_action( 'manage_shop_coupon_posts_custom_column', [ __CLASS__, 'render_coupon_columns' ], 10, 2 );
         add_filter( 'manage_edit-shop_coupon_sortable_columns', [ __CLASS__, 'sortable_columns' ] );
 
+        // Coupon usage restriction: allowed phone numbers
+        add_action( 'woocommerce_coupon_options_usage_restriction', [ __CLASS__, 'render_allowed_phones_field' ], 10, 2 );
+        add_action( 'woocommerce_coupon_options_save', [ __CLASS__, 'save_allowed_phones_field' ], 10, 2 );
+
         // Product admin columns (ERP Sync Update button)
         add_filter( 'manage_edit-product_columns', [ __CLASS__, 'add_product_columns' ] );
         add_action( 'manage_product_posts_custom_column', [ __CLASS__, 'render_product_columns' ], 10, 2 );
@@ -1620,6 +1624,33 @@ class Admin {
             }
         } catch ( \Throwable $e ) {
             wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
+    /**
+     * Render "Allowed Phone Numbers" field on the coupon usage restriction tab.
+     */
+    public static function render_allowed_phones_field( int $coupon_id, \WC_Coupon $coupon ): void {
+        woocommerce_wp_text_input( [
+            'id'          => '_erp_sync_allowed_phones',
+            'label'       => __( 'Allowed Phone Numbers', 'erp-sync' ),
+            'placeholder' => __( 'e.g. +1234567890, +0987654321', 'erp-sync' ),
+            'description' => __( 'Comma-separated list of phone numbers. Leave empty to allow all.', 'erp-sync' ),
+            'desc_tip'    => true,
+            'type'        => 'text',
+            'value'       => get_post_meta( $coupon_id, '_erp_sync_allowed_phones', true ),
+        ] );
+    }
+
+    /**
+     * Save "Allowed Phone Numbers" field when coupon is saved.
+     */
+    public static function save_allowed_phones_field( int $post_id, \WC_Coupon $coupon ): void {
+        if ( isset( $_POST['_erp_sync_allowed_phones'] ) ) {
+            $raw   = sanitize_text_field( wp_unslash( $_POST['_erp_sync_allowed_phones'] ) );
+            $phones = array_filter( array_map( 'trim', explode( ',', $raw ) ) );
+            $clean  = implode( ',', $phones );
+            update_post_meta( $post_id, '_erp_sync_allowed_phones', $clean );
         }
     }
 }
