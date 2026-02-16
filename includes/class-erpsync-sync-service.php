@@ -1332,26 +1332,36 @@ class Sync_Service {
             throw new \Exception( __( 'Coupon not found', 'erp-sync' ) );
         }
 
-        $coupon_code = $coupon_post->post_title;
+        // Normalize the local coupon code: trim and format it
+        $coupon_code_raw = $coupon_post->post_title;
+        $coupon_code = erp_sync_format_code( trim( $coupon_code_raw ) );
 
         Logger::instance()->log( 'Starting single coupon sync', [
-            'coupon_id'   => $coupon_id,
-            'coupon_code' => $coupon_code,
-            'user'        => wp_get_current_user()->user_login ?? 'system',
+            'coupon_id'         => $coupon_id,
+            'coupon_code_raw'   => $coupon_code_raw,
+            'coupon_code'       => $coupon_code,
+            'user'              => wp_get_current_user()->user_login ?? 'system',
         ] );
 
         try {
             // Fetch all cards from API and find the matching one
             $cards = $this->api->fetch_cards_remote();
 
+            // Log diagnostic info before searching
+            Logger::instance()->log( 'Searching for coupon in API cards', [
+                'normalized_code' => $coupon_code,
+                'cards_count'     => count( $cards ),
+            ] );
+
             foreach ( $cards as $card ) {
                 if ( empty( $card['CardCode'] ) ) {
                     continue;
                 }
 
-                $formatted = erp_sync_format_code( $card['CardCode'] );
+                // Normalize the API card code the same way
+                $card_code_normalized = erp_sync_format_code( trim( $card['CardCode'] ) );
 
-                if ( strtolower( $formatted ) === strtolower( $coupon_code ) ) {
+                if ( strtolower( $card_code_normalized ) === strtolower( $coupon_code ) ) {
                     $this->create_or_update_coupon( $card, true, true );
 
                     Logger::instance()->log( 'Single coupon sync completed', [

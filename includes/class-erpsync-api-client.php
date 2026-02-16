@@ -246,11 +246,12 @@ class API_Client {
                 ] ]
             ];
             
-            $response = null;
-            $successful_params = null;
+            $all_cards = [];
+            $successful_params_list = [];
             $fallback_response = null;
             $fallback_params = null;
             $last_exception = null;
+            $last_response = null;
             
             foreach ( $params_to_try as $params ) {
                 try {
@@ -262,19 +263,41 @@ class API_Client {
                     $has_data = ! empty( $rows );
                     
                     if ( $has_data ) {
-                        // Response has actual data — use it and stop
-                        $response = $candidate;
-                        $successful_params = $params;
+                        // Response has actual data — parse and merge
+                        $cards = $this->parse_information_cards( $candidate );
+                        $count = count( $cards );
+                        
+                        // Merge cards, deduplicating by CardCode (last seen wins)
+                        $duplicates_count = 0;
+                        foreach ( $cards as $card ) {
+                            if ( ! empty( $card['CardCode'] ) ) {
+                                if ( isset( $all_cards[ $card['CardCode'] ] ) ) {
+                                    $duplicates_count++;
+                                }
+                                $all_cards[ $card['CardCode'] ] = $card;
+                            }
+                        }
+                        
+                        if ( $duplicates_count > 0 && $this->debug ) {
+                            Logger::instance()->log( 'InformationCards duplicates detected', [
+                                'params'            => $params,
+                                'duplicates_count'  => $duplicates_count
+                            ] );
+                        }
+                        
+                        $successful_params_list[] = $params;
+                        $last_response = $candidate;
+                        
                         Logger::instance()->log( 'InformationCards successful with params', [
-                            'params' => $params
+                            'params' => $params,
+                            'count'  => $count
                         ] );
-                        break;
-                    }
-                    
-                    // Valid response but empty — store as fallback, keep trying
-                    if ( $fallback_response === null ) {
-                        $fallback_response = $candidate;
-                        $fallback_params = $params;
+                    } else {
+                        // Valid response but empty — store as fallback, keep trying
+                        if ( $fallback_response === null ) {
+                            $fallback_response = $candidate;
+                            $fallback_params = $params;
+                        }
                     }
                 } catch ( \Throwable $e ) {
                     $last_exception = $e;
@@ -282,21 +305,30 @@ class API_Client {
                 }
             }
             
-            // Use fallback if no non-empty response was found
-            if ( $response === null && $fallback_response !== null ) {
-                $response = $fallback_response;
-                $successful_params = $fallback_params;
-            }
-            
-            if ( $response === null ) {
-                throw $last_exception ?? new \RuntimeException( 'All parameter attempts failed' );
+            // If we got any cards, convert back to indexed array
+            if ( ! empty( $all_cards ) ) {
+                $cards = array_values( $all_cards );
+                $row_count = count( $cards );
+                
+                Logger::instance()->log( 'InformationCards merged results', [
+                    'total_cards'         => $row_count,
+                    'successful_params'   => count( $successful_params_list )
+                ] );
+            } else {
+                // Use fallback if no non-empty response was found
+                if ( $fallback_response !== null ) {
+                    $cards = $this->parse_information_cards( $fallback_response );
+                    $row_count = count( $cards );
+                    $last_response = $fallback_response;
+                    // Note: Not adding fallback_params to successful_params_list since it had no data
+                } else {
+                    throw $last_exception ?? new \RuntimeException( 'All parameter attempts failed' );
+                }
             }
 
             $duration_ms = (int) round( ( microtime(true) - $start ) * 1000 );
-            $cards       = $this->parse_information_cards( $response );
-            $row_count   = count( $cards );
 
-            $this->maybe_store_debug( $client, $response, 'cards' );
+            $this->maybe_store_debug( $client, $last_response, 'cards' );
 
             if ( $this->debug ) {
                 $meta = [
@@ -304,7 +336,7 @@ class API_Client {
                     'rows_parsed'        => $row_count,
                     'soap_version'       => $this->soap_version,
                     'force_endpoint'     => $this->force_location ? 1 : 0,
-                    'successful_params'  => $successful_params,
+                    'successful_params'  => $successful_params_list,
                     'request_bytes'      => $this->safe_len( method_exists($client,'__getLastRequest') ? $client->__getLastRequest() : '' ),
                     'response_bytes'     => $this->safe_len( method_exists($client,'__getLastResponse') ? $client->__getLastResponse() : '' ),
                     'memory_peak_kb'     => (int) ( memory_get_peak_usage(true) / 1024 ),
