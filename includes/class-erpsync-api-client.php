@@ -248,28 +248,48 @@ class API_Client {
             
             $response = null;
             $successful_params = null;
+            $fallback_response = null;
+            $fallback_params = null;
+            $last_exception = null;
             
             foreach ( $params_to_try as $params ) {
                 try {
-                    $response = $client->__soapCall( 'InformationCards', $params );
-                    $successful_params = $params;
+                    $candidate = $client->__soapCall( 'InformationCards', $params );
                     
-                    // Check if we got data
-                    $test_arr = json_decode( json_encode( $response ), true );
-                    if ( ! empty( $test_arr ) ) {
+                    // Check if response contains actual data rows
+                    $test_arr = json_decode( json_encode( $candidate ), true );
+                    $rows = $test_arr['return']['InformationCardsRow'] ?? [];
+                    $has_data = ! empty( $rows );
+                    
+                    if ( $has_data ) {
+                        // Response has actual data — use it and stop
+                        $response = $candidate;
+                        $successful_params = $params;
                         Logger::instance()->log( 'InformationCards successful with params', [
                             'params' => $params
                         ] );
-                        break; // Found working params
+                        break;
+                    }
+                    
+                    // Valid response but empty — store as fallback, keep trying
+                    if ( $fallback_response === null ) {
+                        $fallback_response = $candidate;
+                        $fallback_params = $params;
                     }
                 } catch ( \Throwable $e ) {
-                    // Try next parameter set
+                    $last_exception = $e;
                     continue;
                 }
             }
             
-            if ( ! $response ) {
-                throw new \RuntimeException( 'All parameter attempts failed' );
+            // Use fallback if no non-empty response was found
+            if ( $response === null && $fallback_response !== null ) {
+                $response = $fallback_response;
+                $successful_params = $fallback_params;
+            }
+            
+            if ( $response === null ) {
+                throw $last_exception ?? new \RuntimeException( 'All parameter attempts failed' );
             }
 
             $duration_ms = (int) round( ( microtime(true) - $start ) * 1000 );
