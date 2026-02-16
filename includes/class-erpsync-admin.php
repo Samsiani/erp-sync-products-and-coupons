@@ -48,6 +48,8 @@ class Admin {
         add_action( 'wp_ajax_erp_sync_single_update', [ __CLASS__, 'ajax_single_update' ] );
         add_action( 'wp_ajax_erp_sync_stock', [ __CLASS__, 'ajax_sync_stock' ] );
         add_action( 'wp_ajax_erp_sync_catalog', [ __CLASS__, 'ajax_sync_catalog' ] );
+        add_action( 'wp_ajax_erp_sync_coupons', [ __CLASS__, 'ajax_sync_coupons' ] );
+        add_action( 'wp_ajax_erp_sync_single_coupon_update', [ __CLASS__, 'ajax_single_coupon_update' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
@@ -686,6 +688,70 @@ class Admin {
         }
     }
 
+    /**
+     * AJAX handler for coupons sync with batch processing.
+     * Handles 'init', 'process', and 'cleanup' steps.
+     */
+    public static function ajax_sync_coupons(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        // Get batch processing parameters
+        $step       = isset( $_POST['step'] ) ? sanitize_text_field( wp_unslash( $_POST['step'] ) ) : 'init';
+        $offset     = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        $batch_size = isset( $_POST['batch_size'] ) ? absint( $_POST['batch_size'] ) : 50;
+        $session_id = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+
+        // Generate session ID if not provided
+        if ( empty( $session_id ) ) {
+            $session_id = uniqid( 'coupons_', true );
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->sync_coupons_step( $step, $offset, $batch_size, $session_id );
+
+            wp_send_json_success( $result );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'AJAX coupons sync failed', [ 'error' => $e->getMessage(), 'step' => $step ] );
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
+    /**
+     * AJAX handler for single coupon update.
+     * Syncs a single coupon from the ERP.
+     */
+    public static function ajax_single_coupon_update(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        $coupon_id = isset( $_POST['coupon_id'] ) ? intval( $_POST['coupon_id'] ) : 0;
+
+        if ( ! $coupon_id ) {
+            wp_send_json_error( [ 'message' => __( 'Invalid coupon ID', 'erp-sync' ) ] );
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->sync_single_coupon( $coupon_id );
+
+            if ( $result ) {
+                wp_send_json_success( [ 'message' => __( 'Coupon synced successfully', 'erp-sync' ) ] );
+            } else {
+                wp_send_json_error( [ 'message' => __( 'Coupon not found in ERP', 'erp-sync' ) ] );
+            }
+        } catch ( \Throwable $e ) {
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
     private static function render_notices(): void {
         $notices = [];
         $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr','branches_saved'];
@@ -1222,6 +1288,13 @@ class Admin {
                 <p class="description"><?php _e('Use these buttons to manually trigger coupon synchronization operations.', 'erp-sync'); ?></p>
                 
                 <div class="erp-sync-action-buttons">
+                    <div style="display:inline-block; margin-right: 20px; margin-bottom: 15px;">
+                        <button type="button" class="button button-primary erp-sync-ajax-btn" data-action="erp_sync_coupons" id="btn-sync-coupons">
+                            <?php _e('Sync Coupons (Batch)','erp-sync'); ?>
+                        </button>
+                        <p class="description"><?php _e('Batch sync all coupons from 1C. Handles large datasets without timeouts.', 'erp-sync'); ?></p>
+                    </div>
+
                     <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline-block;">
                         <?php wp_nonce_field( 'erp_sync_actions' ); ?>
                         <input type="hidden" name="action" value="erp_sync_import_new">
@@ -1473,6 +1546,7 @@ class Admin {
         $cols['erp_sync_base_discount'] = __( 'Base %', 'erp-sync' );
         $cols['erp_sync_is_deleted']    = __( 'Deleted?', 'erp-sync' );
         $cols['erp_sync_dob']           = __( 'DOB', 'erp-sync' );
+        $cols['erp_sync_coupon_actions'] = __( 'ERP Sync', 'erp-sync' );
         return $cols;
     }
 
@@ -1514,6 +1588,12 @@ class Admin {
                 echo '<span class="erp-sync-editable" data-coupon-id="' . esc_attr( $post_id ) . '" data-field="dob">';
                 echo esc_html( $dob_value );
                 echo '</span>';
+                break;
+
+            case 'erp_sync_coupon_actions':
+                echo '<button type="button" class="button erp-sync-single-coupon-update" data-id="' . esc_attr( $post_id ) . '">';
+                echo esc_html__( 'Sync', 'erp-sync' );
+                echo '</button>';
                 break;
         }
     }
