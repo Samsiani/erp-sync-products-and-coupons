@@ -529,6 +529,147 @@
         });
     }
 
+    // CSV Coupon Import
+    function initCsvImport() {
+        $('#erp-sync-csv-import-btn').on('click', function(e) {
+            e.preventDefault();
+
+            const $button = $(this);
+            const $fileInput = $('#erp-sync-csv-file');
+            const file = $fileInput[0].files[0];
+
+            if (!file) {
+                alert('Please select a CSV file first.');
+                return;
+            }
+
+            // Prevent double-clicks
+            if ($button.prop('disabled')) {
+                return;
+            }
+
+            const originalText = $button.text();
+            const originalWidth = $button.outerWidth();
+            $button.css('min-width', originalWidth + 'px');
+
+            // Disable button and show loading state
+            $button.prop('disabled', true).addClass('updating-message');
+            $button.html(originalText + ' <span class="erp-sync-loading"></span>');
+
+            // Start progress polling
+            syncInProgress = true;
+            startProgressPolling();
+
+            // Generate unique session ID
+            const sessionId = 'csv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+            // Build FormData for file upload (init step)
+            var formData = new FormData();
+            formData.append('action', 'erp_sync_coupons_csv_import');
+            formData.append('nonce', erpSyncAdmin.nonce);
+            formData.append('step', 'init');
+            formData.append('offset', '0');
+            formData.append('batch_size', String(BATCH_SIZE));
+            formData.append('session_id', sessionId);
+            formData.append('csv_file', file);
+
+            $.ajax({
+                url: erpSyncAdmin.ajaxurl,
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                timeout: 60000,
+                success: function(response) {
+                    if (response.success) {
+                        const totalCount = response.data.total || 0;
+
+                        if (totalCount === 0) {
+                            // No rows to process, go to cleanup
+                            runCsvStep('cleanup', 0, sessionId, 0, $button, originalText, {
+                                created: 0, updated: 0, errors: 0, total: 0
+                            });
+                        } else {
+                            updateProgressUI(0, totalCount, 'Starting CSV import...');
+                            // Start processing first batch
+                            runCsvStep('process', 0, sessionId, 0, $button, originalText, {
+                                created: 0, updated: 0, errors: 0, total: totalCount
+                            });
+                        }
+                    } else {
+                        handleSyncError($button, originalText, response.data?.message || 'CSV upload failed');
+                    }
+                },
+                error: function(xhr, status, error) {
+                    handleSyncError($button, originalText, 'CSV upload failed: ' + error);
+                }
+            });
+        });
+    }
+
+    /**
+     * Run a CSV import step (process or cleanup) using the recursive AJAX pattern.
+     */
+    function runCsvStep(step, offset, sessionId, retryCount, $button, originalText, aggregateStats) {
+        $.ajax({
+            url: erpSyncAdmin.ajaxurl,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'erp_sync_coupons_csv_import',
+                nonce: erpSyncAdmin.nonce,
+                step: step,
+                offset: offset,
+                batch_size: BATCH_SIZE,
+                session_id: sessionId
+            },
+            success: function(response) {
+                if (response.success) {
+                    var data = response.data;
+
+                    if (step === 'process') {
+                        aggregateStats.created = (aggregateStats.created || 0) + (data.created || 0);
+                        aggregateStats.updated = (aggregateStats.updated || 0) + (data.updated || 0);
+                        aggregateStats.errors = (aggregateStats.errors || 0) + (data.errors || 0);
+
+                        var nextOffset = data.next_offset || (offset + BATCH_SIZE);
+                        var totalCount = data.total || aggregateStats.total || 0;
+
+                        updateProgressUI(Math.min(nextOffset, totalCount), totalCount,
+                            'CSV import batch ' + Math.ceil(nextOffset / BATCH_SIZE) + '...');
+
+                        if (nextOffset >= totalCount) {
+                            runCsvStep('cleanup', 0, sessionId, 0, $button, originalText, {
+                                ...aggregateStats, total: totalCount
+                            });
+                        } else {
+                            runCsvStep('process', nextOffset, sessionId, 0, $button, originalText, {
+                                ...aggregateStats, total: totalCount
+                            });
+                        }
+                    } else if (step === 'cleanup') {
+                        handleSyncSuccess($button, originalText, aggregateStats);
+                    }
+                } else {
+                    handleSyncError($button, originalText, response.data?.message || 'Unknown error');
+                }
+            },
+            error: function(xhr, status, error) {
+                if (retryCount < MAX_RETRIES) {
+                    var newRetryCount = retryCount + 1;
+                    updateProgressUI(offset, aggregateStats.total || 0,
+                        'Retrying... (attempt ' + newRetryCount + '/' + MAX_RETRIES + ')');
+
+                    setTimeout(function() {
+                        runCsvStep(step, offset, sessionId, newRetryCount, $button, originalText, aggregateStats);
+                    }, RETRY_DELAY_MS);
+                } else {
+                    handleSyncError($button, originalText, 'Failed after ' + MAX_RETRIES + ' retries: ' + error);
+                }
+            }
+        });
+    }
+
     // Initialize on document ready
     $(document).ready(function() {
         initTabs();
@@ -538,6 +679,7 @@
         initConfirmations();
         initSingleProductUpdate();
         initSingleCouponUpdate();
+        initCsvImport();
         
         console.log('ERP Sync Admin JS v1.5.0 loaded');
     });
