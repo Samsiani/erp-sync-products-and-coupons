@@ -77,6 +77,16 @@ class Sync_Service {
     const TRANSIENT_COUPONS_DATA_PREFIX = 'erpsync_temp_coupons_';
 
     /**
+     * Transient key for CSV import lock.
+     */
+    const TRANSIENT_LOCK_CSV_IMPORT = 'erp_sync_lock_csv_import';
+
+    /**
+     * Transient key prefix for cached CSV import data.
+     */
+    const TRANSIENT_CSV_DATA_PREFIX = 'erpsync_temp_csv_';
+
+    /**
      * Cache expiration time in seconds (1 hour).
      */
     const TRANSIENT_CACHE_EXPIRATION = 3600;
@@ -1311,6 +1321,411 @@ class Sync_Service {
 
         return [
             'message' => __( 'Coupons sync completed successfully', 'erp-sync' ),
+            'step'    => 'cleanup',
+        ];
+    }
+
+    /**
+     * Step-based CSV coupon import for AJAX batch processing.
+     *
+     * Handles 'init', 'process', and 'cleanup' steps for CSV batch import.
+     *
+     * @param string $step       Current step: 'init', 'process', or 'cleanup'.
+     * @param int    $offset     Current offset for batch processing.
+     * @param int    $batch_size Number of items to process per batch.
+     * @param string $session_id Unique session identifier.
+     * @param string $file_path  Uploaded CSV file path (required for 'init' step).
+     * @return array Response data for the current step.
+     * @throws \Exception If step fails.
+     */
+    public function sync_coupons_csv_step( string $step, int $offset, int $batch_size, string $session_id, string $file_path = '' ): array {
+        $transient_key = self::TRANSIENT_CSV_DATA_PREFIX . $session_id;
+
+        switch ( $step ) {
+            case 'init':
+                return $this->init_csv_import( $session_id, $transient_key, $file_path );
+
+            case 'process':
+                return $this->process_csv_batch_from_cache( $session_id, $transient_key, $offset, $batch_size );
+
+            case 'cleanup':
+                return $this->cleanup_csv_import( $session_id, $transient_key );
+
+            default:
+                throw new \Exception( __( 'Invalid sync step', 'erp-sync' ) );
+        }
+    }
+
+    /**
+     * Initialize CSV import: parse CSV file, validate headers, and cache parsed rows.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for caching.
+     * @param string $file_path     Uploaded CSV file path.
+     * @return array Response with total count.
+     * @throws \Exception If file is invalid, headers are wrong, or import already in progress.
+     */
+    private function init_csv_import( string $session_id, string $transient_key, string $file_path ): array {
+        // Check if a CSV import is already in progress
+        if ( get_transient( self::TRANSIENT_LOCK_CSV_IMPORT ) ) {
+            throw new \Exception( __( 'CSV import already in progress. Please wait.', 'erp-sync' ) );
+        }
+
+        if ( empty( $file_path ) || ! file_exists( $file_path ) ) {
+            throw new \Exception( __( 'CSV file not found.', 'erp-sync' ) );
+        }
+
+        // Set the lock
+        set_transient( self::TRANSIENT_LOCK_CSV_IMPORT, $session_id, self::TRANSIENT_LOCK_EXPIRATION );
+
+        Logger::instance()->log( 'CSV import init step started', [
+            'session_id' => $session_id,
+            'file_path'  => $file_path,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        // Parse CSV file with handling for different line endings
+        $rows = $this->parse_csv_file( $file_path );
+
+        $total = count( $rows );
+
+        // Store parsed data in transient for batch processing
+        set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+
+        // Store session metadata
+        update_option( self::OPTION_ACTIVE_SESSION, [
+            'session_id' => $session_id,
+            'type'       => 'csv_import',
+            'started_at' => current_time( 'mysql' ),
+            'total'      => $total,
+        ] );
+
+        // Clean up uploaded file after parsing
+        if ( file_exists( $file_path ) ) {
+            wp_delete_file( $file_path );
+        }
+
+        Logger::instance()->log( 'CSV import init completed', [
+            'session_id' => $session_id,
+            'total'      => $total,
+        ] );
+
+        return [
+            'message' => __( 'CSV parsed and cached', 'erp-sync' ),
+            'total'   => $total,
+            'step'    => 'init',
+        ];
+    }
+
+    /**
+     * Parse a CSV file into an array of associative rows.
+     *
+     * Handles different line endings (Windows, Mac, Unix) and validates
+     * that the CSV contains exactly the required headers: code, phone, discount.
+     *
+     * @param string $file_path Path to the CSV file.
+     * @return array Array of associative arrays with keys: code, phone, discount.
+     * @throws \Exception If headers are invalid or file cannot be read.
+     */
+    private function parse_csv_file( string $file_path ): array {
+        // Handle different line endings (Windows \r\n, old Mac \r, Unix \n)
+        $prev_ini = ini_get( 'auto_detect_line_endings' );
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @ini_set( 'auto_detect_line_endings', '1' );
+
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+        $handle = fopen( $file_path, 'r' );
+        if ( ! $handle ) {
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception( __( 'Cannot open CSV file.', 'erp-sync' ) );
+        }
+
+        // Read header row
+        $header = fgetcsv( $handle );
+        if ( ! is_array( $header ) ) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+            fclose( $handle );
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception( __( 'CSV file is empty or cannot be parsed.', 'erp-sync' ) );
+        }
+
+        // Normalize headers: trim whitespace, lowercase, strip BOM
+        $header = array_map( function ( string $h ): string {
+            $h = trim( $h );
+            // Strip UTF-8 BOM if present on first column
+            $h = preg_replace( '/^\x{FEFF}/u', '', $h );
+            return strtolower( $h );
+        }, $header );
+
+        // Strict header validation: must contain exactly code, phone, discount
+        $required = [ 'code', 'phone', 'discount' ];
+        $diff     = array_diff( $required, $header );
+        if ( ! empty( $diff ) ) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+            fclose( $handle );
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception(
+                sprintf(
+                    /* translators: %s: comma-separated list of missing headers */
+                    __( 'CSV is missing required headers: %s. Required: code, phone, discount.', 'erp-sync' ),
+                    implode( ', ', $diff )
+                )
+            );
+        }
+
+        // Map column indices
+        $col_code     = array_search( 'code', $header, true );
+        $col_phone    = array_search( 'phone', $header, true );
+        $col_discount = array_search( 'discount', $header, true );
+
+        $rows    = [];
+        $line_no = 1; // Header was line 1
+
+        while ( ( $line = fgetcsv( $handle ) ) !== false ) {
+            $line_no++;
+
+            // Skip empty rows
+            if ( empty( $line ) || ( count( $line ) === 1 && trim( $line[0] ) === '' ) ) {
+                continue;
+            }
+
+            $code     = isset( $line[ $col_code ] ) ? sanitize_text_field( trim( $line[ $col_code ] ) ) : '';
+            $phone    = isset( $line[ $col_phone ] ) ? sanitize_text_field( trim( $line[ $col_phone ] ) ) : '';
+            $discount = isset( $line[ $col_discount ] ) ? trim( $line[ $col_discount ] ) : '0';
+
+            if ( empty( $code ) ) {
+                Logger::instance()->log( 'CSV import: skipping row with empty code', [
+                    'line' => $line_no,
+                ] );
+                continue;
+            }
+
+            // Normalize phone using the plugin's helper
+            $phone = Coupon_Dynamic::normalize_phone( $phone );
+
+            // Sanitize discount to a non-negative number
+            $discount = max( 0, (int) $discount );
+
+            $rows[] = [
+                'code'     => $code,
+                'phone'    => $phone,
+                'discount' => $discount,
+                'line'     => $line_no,
+            ];
+        }
+
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+        fclose( $handle );
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @ini_set( 'auto_detect_line_endings', $prev_ini );
+
+        return $rows;
+    }
+
+    /**
+     * Process a batch of CSV coupon rows from cache.
+     *
+     * For each row, creates or updates a WooCommerce coupon using the
+     * "Update or Create" strategy with the CSV as source of truth.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @param int    $offset        Current offset.
+     * @param int    $batch_size    Number of items to process.
+     * @return array Response with batch stats.
+     * @throws \Exception If cached data is missing.
+     */
+    private function process_csv_batch_from_cache( string $session_id, string $transient_key, int $offset, int $batch_size ): array {
+        // Retrieve cached data
+        $rows = get_transient( $transient_key );
+
+        if ( false === $rows || ! is_array( $rows ) ) {
+            throw new \Exception( __( 'CSV cache expired. Please re-upload the file.', 'erp-sync' ) );
+        }
+
+        $total = count( $rows );
+
+        // Get batch using array_slice
+        $batch = array_slice( $rows, $offset, $batch_size );
+
+        if ( empty( $batch ) ) {
+            return [
+                'message'     => __( 'No more items to process', 'erp-sync' ),
+                'total'       => $total,
+                'next_offset' => $total,
+                'processed'   => 0,
+                'created'     => 0,
+                'updated'     => 0,
+                'errors'      => 0,
+                'step'        => 'process',
+            ];
+        }
+
+        $created = 0;
+        $updated = 0;
+        $errors  = 0;
+
+        foreach ( $batch as $row ) {
+            try {
+                $result = $this->create_or_update_coupon_from_csv( $row );
+                if ( $result === 'created' ) {
+                    $created++;
+                } else {
+                    $updated++;
+                }
+            } catch ( \Throwable $e ) {
+                $errors++;
+                Logger::instance()->log( 'CSV import row error', [
+                    'session_id' => $session_id,
+                    'code'       => $row['code'] ?? '',
+                    'line'       => $row['line'] ?? 0,
+                    'error'      => $e->getMessage(),
+                ] );
+            }
+        }
+
+        // Memory management
+        $this->clear_memory_caches();
+
+        $next_offset = $offset + count( $batch );
+
+        // Update progress
+        $this->set_progress( $next_offset, $total, sprintf( 'CSV import: processing batch at offset %d', $offset ) );
+
+        Logger::instance()->log( 'CSV batch processed from cache', [
+            'session_id'  => $session_id,
+            'offset'      => $offset,
+            'batch_size'  => count( $batch ),
+            'next_offset' => $next_offset,
+            'created'     => $created,
+            'updated'     => $updated,
+            'errors'      => $errors,
+        ] );
+
+        return [
+            'message'     => sprintf( __( 'Processed batch at offset %d', 'erp-sync' ), $offset ),
+            'total'       => $total,
+            'next_offset' => $next_offset,
+            'processed'   => count( $batch ),
+            'created'     => $created,
+            'updated'     => $updated,
+            'errors'      => $errors,
+            'step'        => 'process',
+        ];
+    }
+
+    /**
+     * Create or update a WooCommerce coupon from a CSV row.
+     *
+     * Uses the "Update or Create" strategy with the CSV as source of truth.
+     * Maps phone → _erp_sync_allowed_phones, discount → coupon_amount + _erp_sync_base_discount.
+     * Sets mandatory attributes: _erp_sync_managed=1, exclude_sale_items=yes,
+     * discount_type=percent, post_status=publish.
+     *
+     * @param array $row CSV row with keys: code, phone, discount, line.
+     * @return string 'created' or 'updated'.
+     */
+    private function create_or_update_coupon_from_csv( array $row ): string {
+        $code     = erp_sync_format_code( $row['code'] );
+        $phone    = $row['phone'];
+        $discount = max( 0, (int) $row['discount'] );
+
+        $coupon_id = wc_get_coupon_id_by_code( $code );
+        $action    = 'updated';
+
+        if ( ! $coupon_id ) {
+            // Create new coupon
+            $coupon_id = wp_insert_post( [
+                'post_title'  => $code,
+                'post_name'   => $code,
+                'post_status' => 'publish',
+                'post_type'   => 'shop_coupon',
+                'post_author' => get_current_user_id() ?: 1,
+            ] );
+
+            if ( is_wp_error( $coupon_id ) ) {
+                throw new \Exception( $coupon_id->get_error_message() );
+            }
+
+            $action = 'created';
+
+            Logger::instance()->log( 'CSV import: coupon created', [
+                'code'      => $code,
+                'coupon_id' => $coupon_id,
+            ] );
+        }
+
+        // Mandatory attributes (always set)
+        update_post_meta( $coupon_id, '_erp_sync_managed', 1 );
+        update_post_meta( $coupon_id, 'exclude_sale_items', 'yes' );
+        update_post_meta( $coupon_id, 'discount_type', 'percent' );
+
+        // Ensure coupon is published
+        wp_update_post( [
+            'ID'          => $coupon_id,
+            'post_status' => 'publish',
+        ] );
+
+        // Map discount → coupon_amount and _erp_sync_base_discount
+        update_post_meta( $coupon_id, 'coupon_amount', $discount );
+        update_post_meta( $coupon_id, '_erp_sync_base_discount', $discount );
+
+        // Map phone → _erp_sync_allowed_phones (overwrite existing value)
+        update_post_meta( $coupon_id, '_erp_sync_allowed_phones', $phone );
+
+        // Update sync metadata
+        update_post_meta( $coupon_id, '_erp_sync_synced_at', current_time( 'mysql' ) );
+        update_post_meta( $coupon_id, '_erp_sync_last_sync_user', wp_get_current_user()->user_login ?? 'system' );
+        update_post_meta( $coupon_id, '_erp_sync_csv_imported', current_time( 'mysql' ) );
+
+        // Clear WooCommerce coupon cache
+        if ( function_exists( 'wc_delete_coupon_transients' ) ) {
+            wc_delete_coupon_transients( $coupon_id );
+        }
+        wp_cache_delete( $coupon_id, 'posts' );
+        clean_post_cache( $coupon_id );
+
+        do_action( 'woocommerce_update_coupon', $coupon_id );
+
+        return $action;
+    }
+
+    /**
+     * Cleanup CSV import: delete transient and update last sync time.
+     *
+     * @param string $session_id    Unique session identifier.
+     * @param string $transient_key Transient key for cached data.
+     * @return array Response with cleanup stats.
+     */
+    private function cleanup_csv_import( string $session_id, string $transient_key ): array {
+        Logger::instance()->log( 'CSV import cleanup step started', [
+            'session_id' => $session_id,
+        ] );
+
+        // Delete the cached data transient
+        delete_transient( $transient_key );
+
+        // Release the lock
+        delete_transient( self::TRANSIENT_LOCK_CSV_IMPORT );
+
+        // Clear active session
+        delete_option( self::OPTION_ACTIVE_SESSION );
+
+        // Update last sync time
+        update_option( self::OPTION_LAST_SYNC, current_time( 'mysql' ) );
+
+        // Clear progress
+        $this->clear_progress();
+
+        Logger::instance()->log( 'CSV import cleanup completed', [
+            'session_id' => $session_id,
+        ] );
+
+        return [
+            'message' => __( 'CSV import completed successfully', 'erp-sync' ),
             'step'    => 'cleanup',
         ];
     }

@@ -50,6 +50,7 @@ class Admin {
         add_action( 'wp_ajax_erp_sync_catalog', [ __CLASS__, 'ajax_sync_catalog' ] );
         add_action( 'wp_ajax_erp_sync_coupons', [ __CLASS__, 'ajax_sync_coupons' ] );
         add_action( 'wp_ajax_erp_sync_single_coupon_update', [ __CLASS__, 'ajax_single_coupon_update' ] );
+        add_action( 'wp_ajax_erp_sync_coupons_csv_import', [ __CLASS__, 'ajax_csv_import_coupons' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
@@ -752,6 +753,82 @@ class Admin {
         }
     }
 
+    /**
+     * AJAX handler for CSV coupon import with batch processing.
+     * Handles 'init' (file upload), 'process', and 'cleanup' steps.
+     */
+    public static function ajax_csv_import_coupons(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        // Get batch processing parameters
+        $step       = isset( $_POST['step'] ) ? sanitize_text_field( wp_unslash( $_POST['step'] ) ) : 'init';
+        $offset     = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        $batch_size = isset( $_POST['batch_size'] ) ? absint( $_POST['batch_size'] ) : 50;
+        $session_id = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+
+        // Generate session ID if not provided
+        if ( empty( $session_id ) ) {
+            $session_id = uniqid( 'csv_', true );
+        }
+
+        $file_path = '';
+
+        // Handle file upload on init step
+        if ( $step === 'init' ) {
+            if ( empty( $_FILES['csv_file'] ) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK ) {
+                wp_send_json_error( [ 'message' => __( 'No file uploaded or upload error.', 'erp-sync' ) ] );
+            }
+
+            $file = $_FILES['csv_file'];
+
+            // Validate MIME type
+            $allowed_mimes = [ 'text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel' ];
+            $finfo         = finfo_open( FILEINFO_MIME_TYPE );
+            $detected_mime = finfo_file( $finfo, $file['tmp_name'] );
+            finfo_close( $finfo );
+
+            if ( ! in_array( $detected_mime, $allowed_mimes, true ) ) {
+                wp_send_json_error( [
+                    'message' => sprintf(
+                        /* translators: %s: detected MIME type */
+                        __( 'Invalid file type: %s. Please upload a CSV file.', 'erp-sync' ),
+                        $detected_mime
+                    ),
+                ] );
+            }
+
+            // Move uploaded file to a temporary location
+            $upload_dir = wp_upload_dir();
+            $target_dir = trailingslashit( $upload_dir['basedir'] ) . 'erp-sync-tmp';
+
+            if ( ! file_exists( $target_dir ) ) {
+                wp_mkdir_p( $target_dir );
+            }
+
+            $target_path = $target_dir . '/csv_import_' . $session_id . '.csv';
+
+            if ( ! move_uploaded_file( $file['tmp_name'], $target_path ) ) {
+                wp_send_json_error( [ 'message' => __( 'Failed to save uploaded file.', 'erp-sync' ) ] );
+            }
+
+            $file_path = $target_path;
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->sync_coupons_csv_step( $step, $offset, $batch_size, $session_id, $file_path );
+
+            wp_send_json_success( $result );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'AJAX CSV import failed', [ 'error' => $e->getMessage(), 'step' => $step ] );
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
     private static function render_notices(): void {
         $notices = [];
         $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr','branches_saved'];
@@ -1352,6 +1429,19 @@ class Admin {
                         <input type="hidden" name="action" value="erp_sync_run_cron_now">
                         <?php submit_button( __('Run Scheduled Import Now','erp-sync'), 'secondary', 'submit', false ); ?>
                     </form>
+                </div>
+
+                <hr style="margin: 20px 0;">
+
+                <h2><?php _e( 'CSV Coupon Import', 'erp-sync' ); ?></h2>
+                <p class="description"><?php _e('Upload a CSV file to batch import/update WooCommerce coupons. The CSV must contain exactly three columns: <code>code</code>, <code>phone</code>, <code>discount</code>.', 'erp-sync'); ?></p>
+
+                <div class="erp-sync-csv-import" style="margin-top: 15px;">
+                    <input type="file" id="erp-sync-csv-file" accept=".csv,text/csv" style="margin-right: 10px;">
+                    <button type="button" class="button button-primary" id="erp-sync-csv-import-btn">
+                        <?php _e('Import CSV Coupons','erp-sync'); ?>
+                    </button>
+                    <p class="description" style="margin-top: 8px;"><?php _e('Supported format: CSV with headers <code>code,phone,discount</code>. Processes in batches of 50 for large files (15,000+ rows).', 'erp-sync'); ?></p>
                 </div>
             </div>
 
