@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ERP Sync Products and Coupons
  * Description: Synchronize products (catalog, stock, prices) and discount cards (coupons) from 1C/IBS SOAP WebExchange service into WooCommerce.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: ERPSync
  * Text Domain: erp-sync
  * Requires at least: 5.8
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Constants
  */
-define( 'ERPSYNC_VERSION', '1.2.0' );
+define( 'ERPSYNC_VERSION', '1.2.1' );
 define( 'ERPSYNC_FILE', __FILE__ );
 define( 'ERPSYNC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ERPSYNC_URL', plugin_dir_url( __FILE__ ) );

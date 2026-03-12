@@ -223,7 +223,7 @@ class Cron {
         set_transient( self::LOCK_TRANSIENT, 1, 10 * MINUTE_IN_SECONDS );
 
         $start = microtime(true);
-        $result = [ 'time' => current_time('mysql'), 'success' => false, 'created' => 0, 'remote' => 0, 'error' => '' ];
+        $result = [ 'time' => current_time('mysql'), 'success' => false, 'created' => 0, 'updated' => 0, 'remote' => 0, 'error' => '' ];
 
         Logger::instance()->log( 'ERP Sync coupon cron run start', [
             'php_mem_usage_kb' => (int) ( memory_get_usage(true) / 1024 ),
@@ -233,9 +233,10 @@ class Cron {
 
         try {
             $svc = new Sync_Service( new API_Client() );
-            $res = $svc->import_new_only();
+            $res = $svc->full_sync();
             $result['success'] = true;
             $result['created'] = (int) ( $res['created'] ?? 0 );
+            $result['updated'] = (int) ( $res['updated'] ?? 0 );
             $result['remote']  = (int) ( $res['total_remote'] ?? 0 );
         } catch ( \Throwable $e ) {
             $result['error'] = $e->getMessage();
@@ -249,6 +250,7 @@ class Cron {
             Logger::instance()->log( 'ERP Sync coupon cron run end', [
                 'success'        => $result['success'] ? 1 : 0,
                 'created'        => $result['created'],
+                'updated'        => $result['updated'],
                 'remote'         => $result['remote'],
                 'error'          => $result['error'],
                 'duration_ms'    => $duration_ms,
