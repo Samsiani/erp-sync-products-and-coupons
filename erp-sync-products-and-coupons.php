@@ -25,6 +25,21 @@ define( 'ERPSYNC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ERPSYNC_URL', plugin_dir_url( __FILE__ ) );
 define( 'ERPSYNC_BASENAME', plugin_basename( __FILE__ ) );
 
+// Autoload Composer dependencies (plugin-update-checker)
+if ( file_exists( ERPSYNC_DIR . 'vendor/autoload.php' ) ) {
+    require_once ERPSYNC_DIR . 'vendor/autoload.php';
+}
+
+// Auto-update via GitHub Releases (yahnis-elsts/plugin-update-checker v5)
+if ( class_exists( '\YahnisElsts\PluginUpdateChecker\v5\PucFactory' ) ) {
+    $erpSyncUpdateChecker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        'https://github.com/Samsiani/erp-sync-products-and-coupons/',
+        __FILE__,
+        'erp-sync-products-and-coupons'
+    );
+    $erpSyncUpdateChecker->getVcsApi()->enableReleaseAssets();
+}
+
 /**
  * Migrate options from old WDCS plugin to new ERPSync naming.
  * This function copies values from old wdcs_ option keys to new erp_sync_ keys,
