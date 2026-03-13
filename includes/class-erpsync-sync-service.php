@@ -157,6 +157,13 @@ class Sync_Service {
     }
 
     /**
+     * Get the Product_Service instance.
+     */
+    public function get_product_service(): Product_Service {
+        return $this->product_service;
+    }
+
+    /**
      * Import only new codes that don't exist locally
      */
     public function import_new_only(): array {
@@ -1962,7 +1969,12 @@ class Sync_Service {
                 $product->update_meta_data( '_erp_sync_managed', 1 );
                 $product->update_meta_data( '_erp_sync_last_update', current_time( 'mysql' ) );
                 $product->update_meta_data( '_erp_sync_zeroed_reason', 'not_found_in_erp' );
+                // Clear stale warehouse data so frontend doesn't show old branch availability
+                $product->update_meta_data( '_erp_sync_warehouse_data', [] );
                 $product->save();
+
+                // Remove all branch taxonomy terms (product is no longer in any branch)
+                wp_set_object_terms( $product->get_id(), [], Product_Service::TAXONOMY_BRANCH );
 
                 // Log the stock change for audit
                 if ( class_exists( '\ERPSync\Audit_Logger' ) ) {
