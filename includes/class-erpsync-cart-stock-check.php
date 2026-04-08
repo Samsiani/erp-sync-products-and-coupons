@@ -59,6 +59,11 @@ class Cart_Stock_Check {
             return $passed;
         }
 
+        // Skip excluded SKUs — never mark these out of stock
+        if ( in_array( $sku, erp_sync_excluded_skus(), true ) ) {
+            return $passed;
+        }
+
         // Throttle: skip if we checked this product recently
         $transient_key = 'erp_cart_check_' . $product_id;
         $last_check = get_transient( $transient_key );

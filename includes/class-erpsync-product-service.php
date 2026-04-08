@@ -1249,6 +1249,13 @@ class Product_Service {
                 continue;
             }
 
+            // Skip excluded SKUs — never zero these out
+            if ( in_array( $product->get_sku(), erp_sync_excluded_skus(), true ) ) {
+                unset( $product );
+                $processed++;
+                continue;
+            }
+
             // Get current stock for logging
             $old_stock = $product->get_stock_quantity();
 
