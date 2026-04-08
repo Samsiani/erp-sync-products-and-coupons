@@ -1783,6 +1783,12 @@ class Admin {
             wp_send_json_error( [ 'message' => __( 'Invalid product ID', 'erp-sync' ) ] );
         }
 
+        // Check if this product's SKU is excluded from ERP sync
+        $product = wc_get_product( $product_id );
+        if ( $product && in_array( $product->get_sku(), erp_sync_excluded_skus(), true ) ) {
+            wp_send_json_error( [ 'message' => __( 'This product cannot be updated from 1C', 'erp-sync' ) ] );
+        }
+
         try {
             $sync_service = new Sync_Service( new API_Client() );
             $result = $sync_service->sync_single_product( $product_id );
