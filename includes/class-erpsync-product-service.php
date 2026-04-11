@@ -721,6 +721,10 @@ class Product_Service {
 
                 // Save product (persists all changes including session_id)
                 $product->save();
+
+                // Mirror price + stock to WPML translations (Georgian = source of truth)
+                $this->propagate_to_wpml_translations( $product );
+
                 $stats['updated']++;
 
                 // Clear individual product from memory to prevent buildup
@@ -911,6 +915,100 @@ class Product_Service {
             $old_warehouses,
             $valid_warehouses
         );
+    }
+
+    /**
+     * Mirror price + stock from a source product to all of its WPML translations.
+     *
+     * The Georgian (ka) product is treated as the source of truth: when ERP updates
+     * it, every translation (currently English) must receive the SAME regular price,
+     * sale price, stock quantity, stock status, manage_stock flag, and warehouse
+     * data — so prices and availability never diverge between languages.
+     *
+     * Safe no-op when WPML is not active or the product has no translation group.
+     * Idempotent: calling on a translation will simply re-mirror to siblings,
+     * which is harmless.
+     *
+     * @param \WC_Product $source The product just written by ERP sync.
+     */
+    public function propagate_to_wpml_translations( \WC_Product $source ): void {
+        // Bail if WPML is not loaded
+        if ( ! defined( 'ICL_SITEPRESS_VERSION' ) && ! has_filter( 'wpml_element_trid' ) ) {
+            return;
+        }
+
+        $source_id = $source->get_id();
+
+        // Resolve translation group ID for this product post
+        $trid = apply_filters( 'wpml_element_trid', null, $source_id, 'post_product' );
+        if ( empty( $trid ) ) {
+            return;
+        }
+
+        // Fetch all translations in this group keyed by language code
+        $translations = apply_filters( 'wpml_get_element_translations', null, $trid, 'post_product' );
+        if ( empty( $translations ) || ! is_array( $translations ) ) {
+            return;
+        }
+
+        // Snapshot canonical values from the source
+        $regular_price  = $source->get_regular_price();
+        $sale_price     = $source->get_sale_price();
+        $stock_qty      = $source->get_stock_quantity();
+        $stock_status   = $source->get_stock_status();
+        $manage_stock   = $source->get_manage_stock();
+        $warehouse_data = $source->get_meta( '_erp_sync_warehouse_data', true );
+
+        $mirrored = [];
+
+        foreach ( $translations as $tr ) {
+            $tr_id = isset( $tr->element_id ) ? (int) $tr->element_id : 0;
+            if ( $tr_id === 0 || $tr_id === $source_id ) {
+                continue;
+            }
+
+            $tr_product = wc_get_product( $tr_id );
+            if ( ! $tr_product ) {
+                continue;
+            }
+
+            // Mirror price
+            $tr_product->set_regular_price( $regular_price === '' ? '' : (string) $regular_price );
+            $tr_product->set_sale_price( $sale_price === '' ? '' : (string) $sale_price );
+
+            // Mirror stock
+            $tr_product->set_manage_stock( (bool) $manage_stock );
+            if ( $stock_qty === null ) {
+                $tr_product->set_stock_quantity( null );
+            } else {
+                $tr_product->set_stock_quantity( (int) $stock_qty );
+            }
+            $tr_product->set_stock_status( $stock_status );
+
+            // Mirror ERP meta so the translation reflects the same warehouse availability
+            if ( is_array( $warehouse_data ) ) {
+                $tr_product->update_meta_data( '_erp_sync_warehouse_data', $warehouse_data );
+            }
+            $tr_product->update_meta_data( '_erp_sync_managed', 1 );
+            $tr_product->update_meta_data( '_erp_sync_synced_at', current_time( 'mysql' ) );
+
+            $tr_product->save();
+
+            $mirrored[] = $tr_id;
+            unset( $tr_product );
+        }
+
+        if ( ! empty( $mirrored ) ) {
+            Logger::instance()->log( 'WPML: mirrored price/stock to translations', [
+                'source_id'    => $source_id,
+                'sku'          => $source->get_sku(),
+                'translations' => $mirrored,
+                'regular'      => $regular_price,
+                'sale'         => $sale_price,
+                'stock'        => $stock_qty,
+                'status'       => $stock_status,
+            ] );
+        }
     }
 
     /**
@@ -1295,6 +1393,9 @@ class Product_Service {
             $product->update_meta_data( '_erp_sync_orphan_zeroed_at', current_time( 'mysql' ) );
             $product->update_meta_data( '_erp_sync_orphan_session_id', $session_id );
             $product->save();
+
+            // Mirror zeroed stock to WPML translations (Georgian = source of truth)
+            $this->propagate_to_wpml_translations( $product );
 
             $orphan_count++;
 

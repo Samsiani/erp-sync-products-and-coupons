@@ -1973,6 +1973,9 @@ class Sync_Service {
                 $product->update_meta_data( '_erp_sync_warehouse_data', [] );
                 $product->save();
 
+                // Mirror zeroed stock to WPML translations (Georgian = source of truth)
+                $this->product_service->propagate_to_wpml_translations( $product );
+
                 // Remove all branch taxonomy terms (product is no longer in any branch)
                 wp_set_object_terms( $product->get_id(), [], Product_Service::TAXONOMY_BRANCH );
 

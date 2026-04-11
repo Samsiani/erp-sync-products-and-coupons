@@ -142,6 +142,9 @@ class Cart_Stock_Check {
         $product->update_meta_data( '_erp_sync_zeroed_reason', 'not_found_in_erp' );
         $product->save();
 
+        // Mirror zeroed stock to WPML translations (Georgian = source of truth)
+        ( new Product_Service() )->propagate_to_wpml_translations( $product );
+
         wp_set_object_terms( $product->get_id(), [], Product_Service::TAXONOMY_BRANCH );
     }
 }
