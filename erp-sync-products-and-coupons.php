@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ERP Sync Products and Coupons
  * Description: Synchronize products (catalog, stock, prices) and discount cards (coupons) from 1C/IBS SOAP WebExchange service into WooCommerce.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: ERPSync
  * Text Domain: erp-sync
  * Requires at least: 5.8
@@ -19,11 +19,39 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Constants
  */
-define( 'ERPSYNC_VERSION', '1.4.0' );
+define( 'ERPSYNC_VERSION', '1.4.1' );
 define( 'ERPSYNC_FILE', __FILE__ );
 define( 'ERPSYNC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ERPSYNC_URL', plugin_dir_url( __FILE__ ) );
 define( 'ERPSYNC_BASENAME', plugin_basename( __FILE__ ) );
+
+/**
+ * Declare WooCommerce feature compatibility.
+ *
+ * Must run on `before_woocommerce_init` so the FeaturesController records the
+ * declarations before WC checks compatibility. Without this the plugin shows up
+ * as "uncertain" and WooCommerce shows the "incompatible plugin" admin notice
+ * whenever any of these features is enabled.
+ *
+ * - custom_order_tables (HPOS): the plugin only touches products and coupons
+ *   via the WC_Product / WC_Coupon API and never queries order tables directly.
+ * - cart_checkout_blocks: the cart hook uses `woocommerce_add_to_cart_validation`
+ *   which fires for both classic and block cart/checkout.
+ */
+add_action( 'before_woocommerce_init', function () {
+    if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'custom_order_tables',
+            __FILE__,
+            true
+        );
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'cart_checkout_blocks',
+            __FILE__,
+            true
+        );
+    }
+} );
 
 // Autoload Composer dependencies (plugin-update-checker)
 if ( file_exists( ERPSYNC_DIR . 'vendor/autoload.php' ) ) {
