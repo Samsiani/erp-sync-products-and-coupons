@@ -902,6 +902,25 @@ class Product_Service {
         // Pass only valid warehouses so taxonomy accurately reflects available branches
         $this->assign_branch_terms( $product, $valid_warehouses );
 
+        // Record every branch with stock (including excluded), independent of the
+        // erp_branch taxonomy which only stores non-excluded branches. Lets admin
+        // see the full branch picture per product without exposing excluded
+        // branches to the storefront.
+        $all_branches = [];
+        foreach ( $valid_warehouses as $wh ) {
+            $loc = $wh['Location'] ?? '';
+            $qty = isset( $wh['Quantity'] ) ? (float) $wh['Quantity'] : 0;
+            if ( $loc !== '' && $qty > 0 ) {
+                $all_branches[] = $loc;
+            }
+        }
+        $product->update_meta_data( '_erp_sync_all_branches', array_values( array_unique( $all_branches ) ) );
+
+        // Apply the excluded-branch status rule: products whose stock lives only
+        // in excluded branches go to draft; products we previously drafted that
+        // now have stock in a non-excluded branch are republished.
+        $this->apply_exclusion_status_rule( $product, $valid_warehouses );
+
         // ========== LOG CHANGES TO AUDIT LOG ==========
         // Pass valid warehouses and recalculated quantity for accurate audit logging
         $this->log_product_changes(
@@ -958,6 +977,9 @@ class Product_Service {
         $stock_status   = $source->get_stock_status();
         $manage_stock   = $source->get_manage_stock();
         $warehouse_data = $source->get_meta( '_erp_sync_warehouse_data', true );
+        $post_status    = $source->get_status();
+        $drafted_flag   = (string) $source->get_meta( '_erp_sync_drafted_by_exclusion', true );
+        $all_branches   = $source->get_meta( '_erp_sync_all_branches', true );
 
         $mirrored = [];
 
@@ -991,6 +1013,23 @@ class Product_Service {
             }
             $tr_product->update_meta_data( '_erp_sync_managed', 1 );
             $tr_product->update_meta_data( '_erp_sync_synced_at', current_time( 'mysql' ) );
+
+            // Mirror full branch list (incl. excluded) — admin-only signal
+            if ( is_array( $all_branches ) ) {
+                $tr_product->update_meta_data( '_erp_sync_all_branches', $all_branches );
+            }
+
+            // Mirror draft-by-exclusion flag + post status so translations follow
+            // the source. Only mirror status when source is publish/draft so we
+            // never overwrite intentional translation states (private, pending, etc.).
+            if ( $drafted_flag === '1' ) {
+                $tr_product->update_meta_data( '_erp_sync_drafted_by_exclusion', '1' );
+            } else {
+                $tr_product->delete_meta_data( '_erp_sync_drafted_by_exclusion' );
+            }
+            if ( in_array( $post_status, [ 'publish', 'draft' ], true ) ) {
+                $tr_product->set_status( $post_status );
+            }
 
             $tr_product->save();
 
@@ -1239,6 +1278,99 @@ class Product_Service {
                 'target_terms' => $target_terms,
                 'error'        => $result->get_error_message(),
             ] );
+        }
+    }
+
+    /**
+     * Apply the excluded-branch status rule.
+     *
+     * Classifies the product by the visibility of its stock-bearing branches:
+     *   - excluded_only: every branch with stock has hide_from_frontend (or
+     *     legacy 'excluded') set in branch settings
+     *   - mixed_or_visible: at least one branch with stock is non-excluded
+     *   - no_stock: warehouse list has no positive-quantity rows (untouched)
+     *
+     * Status transitions are conservative:
+     *   - excluded_only + currently `publish` → flip to `draft`, set the
+     *     `_erp_sync_drafted_by_exclusion` meta flag (idempotent: skips if
+     *     already draft so we never trample admin-drafted products).
+     *   - mixed_or_visible + currently `draft` AND flag is set → flip to
+     *     `publish` and clear the flag. The flag gate guarantees we only
+     *     republish products we drafted; admin-drafted products are left alone.
+     *   - All other combinations: no status change.
+     *
+     * Only acts on simple products. Variable products are not synced today.
+     *
+     * @param \WC_Product $product          Product object (will be saved by caller).
+     * @param array       $valid_warehouses Warehouse rows after EXCLUDED_WAREHOUSE_LOCATIONS filter.
+     */
+    private function apply_exclusion_status_rule( \WC_Product $product, array $valid_warehouses ): void {
+        $branch_settings = get_option( self::OPTION_BRANCH_SETTINGS, [] );
+        if ( ! is_array( $branch_settings ) ) {
+            $branch_settings = [];
+        }
+
+        $branches_with_stock     = [];
+        $non_excluded_with_stock = [];
+        $excluded_with_stock     = [];
+
+        foreach ( $valid_warehouses as $wh ) {
+            $loc = $wh['Location'] ?? '';
+            $qty = isset( $wh['Quantity'] ) ? (float) $wh['Quantity'] : 0;
+            if ( $loc === '' || $qty <= 0 ) {
+                continue;
+            }
+            $branches_with_stock[] = $loc;
+            $settings    = $branch_settings[ $loc ] ?? [];
+            $is_excluded = ! empty( $settings['hide_from_frontend'] ) || ! empty( $settings['excluded'] );
+            if ( $is_excluded ) {
+                $excluded_with_stock[] = $loc;
+            } else {
+                $non_excluded_with_stock[] = $loc;
+            }
+        }
+
+        // No branches with stock at all — orthogonal to exclusion. Leave alone.
+        if ( empty( $branches_with_stock ) ) {
+            return;
+        }
+
+        $current_status = $product->get_status();
+
+        if ( empty( $non_excluded_with_stock ) ) {
+            // excluded_only: draft if currently published
+            if ( $current_status === 'publish' ) {
+                $product->set_status( 'draft' );
+                $product->update_meta_data( '_erp_sync_drafted_by_exclusion', '1' );
+                Audit_Logger::log_change(
+                    $product,
+                    'drafted_by_exclusion',
+                    'publish',
+                    'draft',
+                    sprintf(
+                        'Drafted: stock only in excluded branch(es) [%s]',
+                        implode( ', ', array_values( array_unique( $excluded_with_stock ) ) )
+                    )
+                );
+            }
+            return;
+        }
+
+        // mixed_or_visible: republish only if we drafted it
+        $is_drafted_by_us = (string) $product->get_meta( '_erp_sync_drafted_by_exclusion', true ) === '1';
+        if ( $current_status === 'draft' && $is_drafted_by_us ) {
+            $product->set_status( 'publish' );
+            $product->delete_meta_data( '_erp_sync_drafted_by_exclusion' );
+            Audit_Logger::log_change(
+                $product,
+                'republished_from_exclusion',
+                'draft',
+                'publish',
+                sprintf(
+                    'Republished: now in non-excluded branch(es) [%s]',
+                    implode( ', ', array_values( array_unique( $non_excluded_with_stock ) ) )
+                )
+            );
         }
     }
 
