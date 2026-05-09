@@ -51,14 +51,17 @@ class Admin {
         add_action( 'wp_ajax_erp_sync_coupons', [ __CLASS__, 'ajax_sync_coupons' ] );
         add_action( 'wp_ajax_erp_sync_single_coupon_update', [ __CLASS__, 'ajax_single_coupon_update' ] );
         add_action( 'wp_ajax_erp_sync_coupons_csv_import', [ __CLASS__, 'ajax_csv_import_coupons' ] );
+        add_action( 'wp_ajax_erp_sync_cardholder_csv_import', [ __CLASS__, 'ajax_cardholder_csv_import' ] );
 
         // Coupon admin columns
         add_filter( 'manage_edit-shop_coupon_columns', [ __CLASS__, 'add_coupon_columns' ] );
         add_action( 'manage_shop_coupon_posts_custom_column', [ __CLASS__, 'render_coupon_columns' ], 10, 2 );
         add_filter( 'manage_edit-shop_coupon_sortable_columns', [ __CLASS__, 'sortable_columns' ] );
 
-        // Coupon usage restriction: allowed phone numbers
+        // Coupon usage restriction: cardholder details + allowed phones / IDs
+        add_action( 'woocommerce_coupon_options_usage_restriction', [ __CLASS__, 'render_cardholder_fields' ], 9, 2 );
         add_action( 'woocommerce_coupon_options_usage_restriction', [ __CLASS__, 'render_allowed_phones_field' ], 10, 2 );
+        add_action( 'woocommerce_coupon_options_save', [ __CLASS__, 'save_cardholder_fields' ], 9, 2 );
         add_action( 'woocommerce_coupon_options_save', [ __CLASS__, 'save_allowed_phones_field' ], 10, 2 );
 
         // Product admin columns (ERP Sync Update button)
@@ -829,6 +832,82 @@ class Admin {
         }
     }
 
+    /**
+     * AJAX handler for the cardholder-details CSV import (5-column format:
+     * code, name, phone, inn, discount). Mirrors ajax_csv_import_coupons but
+     * applies the conflict-resolution rules in Sync_Service::sync_cardholder_csv_step.
+     */
+    public static function ajax_cardholder_csv_import(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        $step       = isset( $_POST['step'] ) ? sanitize_text_field( wp_unslash( $_POST['step'] ) ) : 'init';
+        $offset     = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        $batch_size = isset( $_POST['batch_size'] ) ? absint( $_POST['batch_size'] ) : 200;
+        $limit      = isset( $_POST['limit'] ) ? absint( $_POST['limit'] ) : 0;
+        $session_id = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+
+        if ( empty( $session_id ) ) {
+            $session_id = uniqid( 'cardholder_', true );
+        }
+
+        $file_path = '';
+
+        if ( $step === 'init' ) {
+            if ( empty( $_FILES['csv_file'] ) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK ) {
+                wp_send_json_error( [ 'message' => __( 'No file uploaded or upload error.', 'erp-sync' ) ] );
+            }
+
+            $file = $_FILES['csv_file'];
+
+            $allowed_mimes = [ 'text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel' ];
+            $finfo         = finfo_open( FILEINFO_MIME_TYPE );
+            $detected_mime = finfo_file( $finfo, $file['tmp_name'] );
+            finfo_close( $finfo );
+
+            if ( ! in_array( $detected_mime, $allowed_mimes, true ) ) {
+                wp_send_json_error( [
+                    'message' => sprintf(
+                        /* translators: %s: detected MIME type */
+                        __( 'Invalid file type: %s. Please upload a CSV file.', 'erp-sync' ),
+                        $detected_mime
+                    ),
+                ] );
+            }
+
+            $upload_dir = wp_upload_dir();
+            $target_dir = trailingslashit( $upload_dir['basedir'] ) . 'erp-sync-tmp';
+
+            if ( ! file_exists( $target_dir ) ) {
+                wp_mkdir_p( $target_dir );
+            }
+
+            $target_path = $target_dir . '/cardholder_import_' . $session_id . '.csv';
+
+            if ( ! move_uploaded_file( $file['tmp_name'], $target_path ) ) {
+                wp_send_json_error( [ 'message' => __( 'Failed to save uploaded file.', 'erp-sync' ) ] );
+            }
+
+            $file_path = $target_path;
+        }
+
+        try {
+            $sync_service = new Sync_Service( new API_Client() );
+            $result = $sync_service->sync_cardholder_csv_step( $step, $offset, $batch_size, $limit, $session_id, $file_path );
+
+            // echo session_id back so the client can pass it on subsequent steps
+            $result['session_id'] = $session_id;
+
+            wp_send_json_success( $result );
+        } catch ( \Throwable $e ) {
+            Logger::instance()->log( 'AJAX cardholder import failed', [ 'error' => $e->getMessage(), 'step' => $step ] );
+            wp_send_json_error( [ 'message' => $e->getMessage() ] );
+        }
+    }
+
     private static function render_notices(): void {
         $notices = [];
         $notice_keys = ['saved','imported','created','updated','test','rawdump','prodtest','mockgen','syncerr','cronrun','xmldl','reqdl','faultdl','headersdl','metadl','forced','catalog_created','catalogerr','stock_updated','stockerr','branches_saved'];
@@ -1443,6 +1522,32 @@ class Admin {
                     </button>
                     <p class="description" style="margin-top: 8px;"><?php _e('Supported format: CSV with headers <code>code,phone,discount</code>. Processes in batches of 50 for large files (15,000+ rows).', 'erp-sync'); ?></p>
                 </div>
+
+                <hr style="margin: 20px 0;">
+
+                <h2><?php _e( 'Cardholder Details Import', 'erp-sync' ); ?></h2>
+                <p class="description">
+                    <?php _e('Upload a CSV file with cardholder details to back-fill <code>name</code>, <code>mobile</code>, <code>personal ID</code>, and <code>discount</code> on existing coupons (and create new coupons for cards not yet in the database).', 'erp-sync'); ?>
+                </p>
+                <p class="description">
+                    <?php _e('Required headers: <code>code, name, phone, inn, discount</code>. Conflict rules: name &amp; INN — DB wins (fill blanks only). Mobile &amp; allowed phones &amp; allowed IDs — Excel wins (overwrite). Discount — Excel wins, but rows with blank discount that have no matching coupon are skipped.', 'erp-sync'); ?>
+                </p>
+
+                <div class="erp-sync-cardholder-import" style="margin-top: 15px;">
+                    <input type="file" id="erp-sync-cardholder-file" accept=".csv,text/csv" style="margin-right: 10px;">
+                    <label for="erp-sync-cardholder-limit" style="margin-right: 6px;"><?php _e( 'Limit (test mode, 0 = all):', 'erp-sync' ); ?></label>
+                    <input type="number" id="erp-sync-cardholder-limit" value="10" min="0" step="1" style="width:90px;margin-right:10px;">
+                    <button type="button" class="button button-primary" id="erp-sync-cardholder-import-btn">
+                        <?php _e( 'Import Cardholder CSV', 'erp-sync' ); ?>
+                    </button>
+                    <p class="description" style="margin-top: 8px;"><?php _e( 'Processes in batches of 200. For a first test, leave the limit at 10 — only the first 10 rows of the file will be processed.', 'erp-sync' ); ?></p>
+                    <div id="erp-sync-cardholder-progress" style="margin-top:12px;display:none;">
+                        <div class="erp-sync-progress-bar" style="background:#e7e7e7;height:18px;border-radius:3px;overflow:hidden;">
+                            <div class="erp-sync-progress-fill" style="width:0;height:100%;background:#2271b1;transition:width .2s;"></div>
+                        </div>
+                        <div class="erp-sync-progress-text" style="margin-top:6px;font-family:monospace;font-size:12px;"></div>
+                    </div>
+                </div>
             </div>
 
             <!-- Branches Tab (outside the main settings form - contains its own form) -->
@@ -1827,6 +1932,93 @@ class Admin {
             $phones = array_filter( array_map( 'trim', explode( ',', $raw ) ) );
             $clean  = implode( ',', $phones );
             update_post_meta( $post_id, '_erp_sync_allowed_phones', $clean );
+        }
+    }
+
+    /**
+     * Render cardholder detail fields (name, ID, mobile, DOB, base discount,
+     * allowed personal IDs) on the coupon "Usage restriction" tab, above the
+     * existing Allowed Phone Numbers field. Mirrors the descriptive metadata
+     * written by the 1C sync.
+     */
+    public static function render_cardholder_fields( int $coupon_id, \WC_Coupon $coupon ): void {
+        $synced_at = (string) get_post_meta( $coupon_id, '_erp_sync_synced_at', true );
+        $last_user = (string) get_post_meta( $coupon_id, '_erp_sync_last_sync_user', true );
+
+        if ( $synced_at !== '' ) {
+            echo '<p class="form-field" style="color:#646970;font-style:italic;margin-top:8px;">'
+                . sprintf(
+                    /* translators: 1: ISO datetime, 2: username */
+                    esc_html__( 'Last 1C sync: %1$s by %2$s', 'erp-sync' ),
+                    esc_html( $synced_at ),
+                    esc_html( $last_user !== '' ? $last_user : 'system' )
+                )
+                . '</p>';
+        }
+
+        woocommerce_wp_text_input( [
+            'id'    => '_erp_sync_name',
+            'label' => __( 'Cardholder Name', 'erp-sync' ),
+            'value' => get_post_meta( $coupon_id, '_erp_sync_name', true ),
+        ] );
+
+        woocommerce_wp_text_input( [
+            'id'    => '_erp_sync_inn',
+            'label' => __( 'Personal ID (გსნ)', 'erp-sync' ),
+            'value' => get_post_meta( $coupon_id, '_erp_sync_inn', true ),
+        ] );
+
+        woocommerce_wp_text_input( [
+            'id'    => '_erp_sync_mobile',
+            'label' => __( 'Mobile', 'erp-sync' ),
+            'value' => get_post_meta( $coupon_id, '_erp_sync_mobile', true ),
+        ] );
+
+        woocommerce_wp_text_input( [
+            'id'    => '_erp_sync_dob',
+            'label' => __( 'Date of Birth', 'erp-sync' ),
+            'value' => get_post_meta( $coupon_id, '_erp_sync_dob', true ),
+        ] );
+
+        woocommerce_wp_text_input( [
+            'id'                => '_erp_sync_base_discount',
+            'label'             => __( 'Base Discount (%)', 'erp-sync' ),
+            'type'              => 'number',
+            'custom_attributes' => [ 'min' => '0', 'max' => '100', 'step' => '1' ],
+            'value'             => get_post_meta( $coupon_id, '_erp_sync_base_discount', true ),
+        ] );
+
+        woocommerce_wp_text_input( [
+            'id'          => '_erp_sync_allowed_ids',
+            'label'       => __( 'Allowed Personal IDs', 'erp-sync' ),
+            'placeholder' => __( 'e.g. 01234567890, 01234567891', 'erp-sync' ),
+            'description' => __( 'Comma-separated list of personal IDs. Leave empty to allow all.', 'erp-sync' ),
+            'desc_tip'    => true,
+            'value'       => get_post_meta( $coupon_id, '_erp_sync_allowed_ids', true ),
+        ] );
+    }
+
+    /**
+     * Save cardholder detail fields when a coupon is saved.
+     */
+    public static function save_cardholder_fields( int $post_id, \WC_Coupon $coupon ): void {
+        $simple_fields = [
+            '_erp_sync_name',
+            '_erp_sync_inn',
+            '_erp_sync_mobile',
+            '_erp_sync_dob',
+            '_erp_sync_base_discount',
+        ];
+        foreach ( $simple_fields as $key ) {
+            if ( array_key_exists( $key, $_POST ) ) {
+                update_post_meta( $post_id, $key, sanitize_text_field( wp_unslash( $_POST[ $key ] ) ) );
+            }
+        }
+
+        if ( array_key_exists( '_erp_sync_allowed_ids', $_POST ) ) {
+            $raw = sanitize_text_field( wp_unslash( $_POST['_erp_sync_allowed_ids'] ) );
+            $ids = array_filter( array_map( 'trim', explode( ',', $raw ) ) );
+            update_post_meta( $post_id, '_erp_sync_allowed_ids', implode( ',', $ids ) );
         }
     }
 }

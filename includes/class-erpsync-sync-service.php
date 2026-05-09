@@ -87,6 +87,16 @@ class Sync_Service {
     const TRANSIENT_CSV_DATA_PREFIX = 'erpsync_temp_csv_';
 
     /**
+     * Transient key for cardholder-details (5-column) CSV import lock.
+     */
+    const TRANSIENT_LOCK_CARDHOLDER_IMPORT = 'erp_sync_lock_cardholder_import';
+
+    /**
+     * Transient key prefix for cached cardholder-details CSV data.
+     */
+    const TRANSIENT_CARDHOLDER_DATA_PREFIX = 'erpsync_temp_cardholder_';
+
+    /**
      * Cache expiration time in seconds (1 hour).
      */
     const TRANSIENT_CACHE_EXPIRATION = 3600;
@@ -1733,6 +1743,433 @@ class Sync_Service {
 
         return [
             'message' => __( 'CSV import completed successfully', 'erp-sync' ),
+            'step'    => 'cleanup',
+        ];
+    }
+
+    /**
+     * Cardholder-details CSV import — multi-step batched processor.
+     *
+     * Wider CSV format than sync_coupons_csv_step: code, name, phone, inn, discount.
+     * Conflict-resolution rules:
+     *   - name      → DB wins (fill only if DB blank)
+     *   - inn       → DB wins (fill only if DB blank)
+     *   - mobile    → Excel wins (overwrite)
+     *   - allowed_phones → Excel wins (overwrite)
+     *   - allowed_ids   → Excel wins (overwrite, new field)
+     *   - base_discount + coupon_amount → Excel wins, but only when Excel discount is non-blank
+     * Excel rows that do not match an existing coupon AND have a non-blank discount
+     * are created as new coupons. Rows with blank discount and no match are skipped.
+     */
+    public function sync_cardholder_csv_step( string $step, int $offset, int $batch_size, int $limit, string $session_id, string $file_path = '' ): array {
+        $transient_key = self::TRANSIENT_CARDHOLDER_DATA_PREFIX . $session_id;
+
+        switch ( $step ) {
+            case 'init':
+                return $this->init_cardholder_import( $session_id, $transient_key, $file_path, $limit );
+            case 'process':
+                return $this->process_cardholder_batch( $session_id, $transient_key, $offset, $batch_size );
+            case 'cleanup':
+                return $this->cleanup_cardholder_import( $session_id, $transient_key );
+            default:
+                throw new \Exception( __( 'Invalid sync step', 'erp-sync' ) );
+        }
+    }
+
+    private function init_cardholder_import( string $session_id, string $transient_key, string $file_path, int $limit ): array {
+        if ( get_transient( self::TRANSIENT_LOCK_CARDHOLDER_IMPORT ) ) {
+            throw new \Exception( __( 'Cardholder import already in progress. Please wait.', 'erp-sync' ) );
+        }
+        if ( empty( $file_path ) || ! file_exists( $file_path ) ) {
+            throw new \Exception( __( 'Cardholder CSV file not found.', 'erp-sync' ) );
+        }
+
+        set_transient( self::TRANSIENT_LOCK_CARDHOLDER_IMPORT, $session_id, self::TRANSIENT_LOCK_EXPIRATION );
+
+        Logger::instance()->log( 'Cardholder import init started', [
+            'session_id' => $session_id,
+            'file_path'  => $file_path,
+            'limit'      => $limit,
+            'user'       => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        $rows = $this->parse_cardholder_csv_file( $file_path );
+
+        if ( $limit > 0 && $limit < count( $rows ) ) {
+            $rows = array_slice( $rows, 0, $limit );
+        }
+
+        $total = count( $rows );
+        set_transient( $transient_key, $rows, self::TRANSIENT_CACHE_EXPIRATION );
+
+        update_option( self::OPTION_ACTIVE_SESSION, [
+            'session_id' => $session_id,
+            'type'       => 'cardholder_import',
+            'started_at' => current_time( 'mysql' ),
+            'total'      => $total,
+        ] );
+
+        if ( file_exists( $file_path ) ) {
+            wp_delete_file( $file_path );
+        }
+
+        Logger::instance()->log( 'Cardholder import init completed', [
+            'session_id' => $session_id,
+            'total'      => $total,
+        ] );
+
+        return [
+            'message' => __( 'Cardholder CSV parsed and cached', 'erp-sync' ),
+            'total'   => $total,
+            'step'    => 'init',
+        ];
+    }
+
+    /**
+     * Parse the wider cardholder CSV: code, name, phone, inn, discount.
+     */
+    private function parse_cardholder_csv_file( string $file_path ): array {
+        $prev_ini = ini_get( 'auto_detect_line_endings' );
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @ini_set( 'auto_detect_line_endings', '1' );
+
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+        $handle = fopen( $file_path, 'r' );
+        if ( ! $handle ) {
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception( __( 'Cannot open cardholder CSV file.', 'erp-sync' ) );
+        }
+
+        $header = fgetcsv( $handle );
+        if ( ! is_array( $header ) ) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+            fclose( $handle );
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception( __( 'Cardholder CSV is empty or unparseable.', 'erp-sync' ) );
+        }
+
+        $header = array_map( function ( string $h ): string {
+            $h = trim( $h );
+            $h = preg_replace( '/^\x{FEFF}/u', '', $h );
+            return strtolower( $h );
+        }, $header );
+
+        $required = [ 'code', 'name', 'phone', 'inn', 'discount' ];
+        $diff     = array_diff( $required, $header );
+        if ( ! empty( $diff ) ) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+            fclose( $handle );
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @ini_set( 'auto_detect_line_endings', $prev_ini );
+            throw new \Exception( sprintf(
+                /* translators: %s: comma-separated list of missing headers */
+                __( 'Cardholder CSV is missing required headers: %s. Required: code, name, phone, inn, discount.', 'erp-sync' ),
+                implode( ', ', $diff )
+            ) );
+        }
+
+        $col_code     = array_search( 'code',     $header, true );
+        $col_name     = array_search( 'name',     $header, true );
+        $col_phone    = array_search( 'phone',    $header, true );
+        $col_inn      = array_search( 'inn',      $header, true );
+        $col_discount = array_search( 'discount', $header, true );
+
+        $rows    = [];
+        $line_no = 1;
+
+        while ( ( $line = fgetcsv( $handle ) ) !== false ) {
+            $line_no++;
+            if ( empty( $line ) || ( count( $line ) === 1 && trim( (string) $line[0] ) === '' ) ) {
+                continue;
+            }
+
+            $code     = isset( $line[ $col_code ] ) ? trim( (string) $line[ $col_code ] ) : '';
+            $name     = isset( $line[ $col_name ] ) ? trim( (string) $line[ $col_name ] ) : '';
+            $phone    = isset( $line[ $col_phone ] ) ? trim( (string) $line[ $col_phone ] ) : '';
+            $inn      = isset( $line[ $col_inn ] ) ? trim( (string) $line[ $col_inn ] ) : '';
+            $discount = isset( $line[ $col_discount ] ) ? trim( (string) $line[ $col_discount ] ) : '';
+
+            if ( $code === '' || $code === '0' ) {
+                continue;
+            }
+
+            $rows[] = [
+                'code'     => $code,
+                'name'     => $name,
+                'phone'    => Coupon_Dynamic::normalize_phone( $phone ),
+                'inn'      => $inn,
+                'discount' => $discount, // empty string means "no discount in source"
+                'line'     => $line_no,
+            ];
+        }
+
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+        fclose( $handle );
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @ini_set( 'auto_detect_line_endings', $prev_ini );
+
+        return $rows;
+    }
+
+    private function process_cardholder_batch( string $session_id, string $transient_key, int $offset, int $batch_size ): array {
+        $rows = get_transient( $transient_key );
+        if ( false === $rows || ! is_array( $rows ) ) {
+            throw new \Exception( __( 'Cardholder CSV cache expired. Please re-upload.', 'erp-sync' ) );
+        }
+
+        $total = count( $rows );
+        $batch = array_slice( $rows, $offset, $batch_size );
+
+        if ( empty( $batch ) ) {
+            return [
+                'message'     => __( 'No more rows to process', 'erp-sync' ),
+                'total'       => $total,
+                'next_offset' => $total,
+                'processed'   => 0,
+                'created'     => 0,
+                'updated'     => 0,
+                'unchanged'   => 0,
+                'skipped'     => 0,
+                'errors'      => 0,
+                'step'        => 'process',
+            ];
+        }
+
+        $created   = 0;
+        $updated   = 0;
+        $unchanged = 0;
+        $skipped   = 0;
+        $errors    = 0;
+
+        foreach ( $batch as $row ) {
+            try {
+                $r = $this->apply_cardholder_row( $row );
+                switch ( $r ) {
+                    case 'created':   $created++;   break;
+                    case 'updated':   $updated++;   break;
+                    case 'noop':      $unchanged++; break;
+                    case 'skipped':   $skipped++;   break;
+                }
+            } catch ( \Throwable $e ) {
+                $errors++;
+                Logger::instance()->log( 'Cardholder import row error', [
+                    'session_id' => $session_id,
+                    'code'       => $row['code'] ?? '',
+                    'line'       => $row['line'] ?? 0,
+                    'error'      => $e->getMessage(),
+                ] );
+            }
+        }
+
+        // NOTE: deliberately NOT calling clear_memory_caches() here — on hosts
+        // with an external object cache (e.g. LiteSpeed) wp_cache_flush() also
+        // evicts the transient holding our parsed CSV rows, breaking subsequent
+        // batches with "cache expired".
+
+        $next_offset = $offset + count( $batch );
+
+        $this->set_progress( $next_offset, $total, sprintf( 'Cardholder import: batch at offset %d', $offset ) );
+
+        Logger::instance()->log( 'Cardholder batch processed', [
+            'session_id'  => $session_id,
+            'offset'      => $offset,
+            'batch_size'  => count( $batch ),
+            'next_offset' => $next_offset,
+            'created'     => $created,
+            'updated'     => $updated,
+            'unchanged'   => $unchanged,
+            'skipped'     => $skipped,
+            'errors'      => $errors,
+        ] );
+
+        return [
+            'message'     => sprintf( __( 'Processed batch at offset %d', 'erp-sync' ), $offset ),
+            'total'       => $total,
+            'next_offset' => $next_offset,
+            'processed'   => count( $batch ),
+            'created'     => $created,
+            'updated'     => $updated,
+            'unchanged'   => $unchanged,
+            'skipped'     => $skipped,
+            'errors'      => $errors,
+            'step'        => 'process',
+        ];
+    }
+
+    /**
+     * Apply one cardholder CSV row using the agreed conflict-resolution rules.
+     * Returns: 'created', 'updated', 'noop', or 'skipped'.
+     */
+    private function apply_cardholder_row( array $row ): string {
+        $code     = erp_sync_format_code( $row['code'] );
+        $name     = (string) $row['name'];
+        $phone    = (string) $row['phone'];
+        $inn      = (string) $row['inn'];
+        $discount = $row['discount'] === '' ? null : max( 0, (int) $row['discount'] );
+
+        $coupon_id = wc_get_coupon_id_by_code( $code );
+
+        // No matching coupon
+        if ( ! $coupon_id ) {
+            // Skip when no discount: do NOT create
+            if ( $discount === null ) {
+                return 'skipped';
+            }
+
+            $sync_user = wp_get_current_user()->user_login ?: 'cardholder_import';
+            $excerpt   = sprintf(
+                /* translators: 1: cardholder name, 2: ISO datetime, 3: username */
+                __( 'Synchronized discount card - %1$s (Last sync: %2$s by %3$s)', 'erp-sync' ),
+                $name,
+                current_time( 'Y-m-d H:i:s' ),
+                $sync_user
+            );
+
+            $coupon_id = wp_insert_post( [
+                'post_title'   => $code,
+                'post_name'    => $code,
+                'post_status'  => 'publish',
+                'post_type'    => 'shop_coupon',
+                'post_author'  => get_current_user_id() ?: 1,
+                'post_excerpt' => $excerpt,
+            ] );
+            if ( is_wp_error( $coupon_id ) ) {
+                throw new \Exception( $coupon_id->get_error_message() );
+            }
+
+            update_post_meta( $coupon_id, '_erp_sync_managed', 1 );
+            update_post_meta( $coupon_id, 'discount_type', 'percent' );
+            update_post_meta( $coupon_id, 'coupon_amount', $discount );
+            update_post_meta( $coupon_id, '_erp_sync_base_discount', $discount );
+            if ( $name !== '' ) {
+                update_post_meta( $coupon_id, '_erp_sync_name', $name );
+            }
+            if ( $inn !== '' ) {
+                update_post_meta( $coupon_id, '_erp_sync_inn', $inn );
+            }
+            if ( $phone !== '' ) {
+                update_post_meta( $coupon_id, '_erp_sync_mobile', $phone );
+                update_post_meta( $coupon_id, '_erp_sync_allowed_phones', $phone );
+            }
+
+            update_post_meta( $coupon_id, '_erp_sync_synced_at', current_time( 'mysql' ) );
+            update_post_meta( $coupon_id, '_erp_sync_last_sync_user', $sync_user );
+
+            if ( function_exists( 'wc_delete_coupon_transients' ) ) {
+                wc_delete_coupon_transients( $coupon_id );
+            }
+            wp_cache_delete( $coupon_id, 'posts' );
+            clean_post_cache( $coupon_id );
+
+            return 'created';
+        }
+
+        // Matching coupon: per-field rules
+        $changed = false;
+
+        // Name: DB wins (fill only if blank)
+        if ( $name !== '' ) {
+            $cur = (string) get_post_meta( $coupon_id, '_erp_sync_name', true );
+            if ( $cur === '' ) {
+                update_post_meta( $coupon_id, '_erp_sync_name', $name );
+                $changed = true;
+            }
+        }
+
+        // INN: DB wins (fill only if blank)
+        if ( $inn !== '' ) {
+            $cur = (string) get_post_meta( $coupon_id, '_erp_sync_inn', true );
+            if ( $cur === '' ) {
+                update_post_meta( $coupon_id, '_erp_sync_inn', $inn );
+                $changed = true;
+            }
+        }
+
+        // Mobile: Excel wins (overwrite)
+        if ( $phone !== '' ) {
+            $cur = (string) get_post_meta( $coupon_id, '_erp_sync_mobile', true );
+            if ( $cur !== $phone ) {
+                update_post_meta( $coupon_id, '_erp_sync_mobile', $phone );
+                $changed = true;
+            }
+        }
+
+        // Allowed phones: Excel wins (overwrite)
+        if ( $phone !== '' ) {
+            $cur = (string) get_post_meta( $coupon_id, '_erp_sync_allowed_phones', true );
+            if ( $cur !== $phone ) {
+                update_post_meta( $coupon_id, '_erp_sync_allowed_phones', $phone );
+                $changed = true;
+            }
+        }
+
+        // Base discount + coupon_amount: Excel wins ONLY when Excel discount is present
+        if ( $discount !== null ) {
+            $cur_base = (string) get_post_meta( $coupon_id, '_erp_sync_base_discount', true );
+            if ( (int) $cur_base !== $discount ) {
+                update_post_meta( $coupon_id, '_erp_sync_base_discount', $discount );
+                $changed = true;
+            }
+            $cur_amt = (string) get_post_meta( $coupon_id, 'coupon_amount', true );
+            if ( (float) $cur_amt !== (float) $discount ) {
+                update_post_meta( $coupon_id, 'coupon_amount', $discount );
+                $changed = true;
+            }
+        }
+
+        // post_excerpt fallback: if blank (e.g. coupons created by an earlier
+        // run that didn't write excerpt), set the same "Synchronized discount card"
+        // line that the 1C sync uses, so the admin Description column matches.
+        // Never overwrite an existing excerpt — 1C-managed coupons own theirs.
+        $cur_post = get_post( $coupon_id );
+        if ( $cur_post && trim( (string) $cur_post->post_excerpt ) === '' ) {
+            $excerpt_name = $name !== '' ? $name : (string) get_post_meta( $coupon_id, '_erp_sync_name', true );
+            $sync_user    = wp_get_current_user()->user_login ?: 'cardholder_import';
+            $excerpt      = sprintf(
+                /* translators: 1: cardholder name, 2: ISO datetime, 3: username */
+                __( 'Synchronized discount card - %1$s (Last sync: %2$s by %3$s)', 'erp-sync' ),
+                $excerpt_name,
+                current_time( 'Y-m-d H:i:s' ),
+                $sync_user
+            );
+            wp_update_post( [
+                'ID'           => $coupon_id,
+                'post_excerpt' => $excerpt,
+            ] );
+            $changed = true;
+        }
+
+        if ( $changed ) {
+            if ( function_exists( 'wc_delete_coupon_transients' ) ) {
+                wc_delete_coupon_transients( $coupon_id );
+            }
+            wp_cache_delete( $coupon_id, 'posts' );
+            clean_post_cache( $coupon_id );
+            return 'updated';
+        }
+
+        return 'noop';
+    }
+
+    private function cleanup_cardholder_import( string $session_id, string $transient_key ): array {
+        Logger::instance()->log( 'Cardholder import cleanup started', [
+            'session_id' => $session_id,
+        ] );
+
+        delete_transient( $transient_key );
+        delete_transient( self::TRANSIENT_LOCK_CARDHOLDER_IMPORT );
+        delete_option( self::OPTION_ACTIVE_SESSION );
+        update_option( self::OPTION_LAST_SYNC, current_time( 'mysql' ) );
+        $this->clear_progress();
+
+        Logger::instance()->log( 'Cardholder import cleanup completed', [
+            'session_id' => $session_id,
+        ] );
+
+        return [
+            'message' => __( 'Cardholder import completed successfully', 'erp-sync' ),
             'step'    => 'cleanup',
         ];
     }
