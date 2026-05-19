@@ -12,6 +12,27 @@ class Sync_Service {
     const OPTION_LAST_STOCK_SYNC = 'erp_sync_last_stock_sync';
 
     /**
+     * Orphan-cleanup settings. Orphans = ERP-managed products not present in the
+     * current stock feed. The 2026-01-27 incident wiped the EN half of the catalog
+     * because WPML translations were never stamped with session_id (now fixed in
+     * v1.4.4). These rails ensure a single feed glitch can never repeat that.
+     */
+    const OPTION_ORPHAN_ENABLED       = 'erp_sync_orphan_cleanup_enabled';      // master switch (default off)
+    const OPTION_ORPHAN_DRY_RUN       = 'erp_sync_orphan_cleanup_dry_run';      // log-only mode (default on when enabled)
+    const OPTION_ORPHAN_MISS_THRESHOLD = 'erp_sync_orphan_miss_threshold';      // consecutive misses required before zeroing
+    const OPTION_ORPHAN_PER_RUN_CAP   = 'erp_sync_orphan_per_run_cap';          // max zeroings per run
+    const OPTION_ORPHAN_FEED_MIN_RATIO = 'erp_sync_orphan_feed_min_ratio';      // feed-size sanity threshold (0..1)
+    const OPTION_ORPHAN_LAST_RESULT   = 'erp_sync_orphan_last_result';          // last run summary
+    const OPTION_ORPHAN_FEED_BASELINE = 'erp_sync_orphan_feed_baseline';        // rolling-window last N feed sizes
+
+    const ORPHAN_DEFAULT_THRESHOLD      = 3;     // need 3 consecutive misses before any zeroing
+    const ORPHAN_DEFAULT_PER_RUN_CAP    = 100;   // never zero more than 100 products in one run
+    const ORPHAN_DEFAULT_FEED_MIN_RATIO = 0.5;   // if feed has < 50% of expected rows, skip orphan logic
+    const ORPHAN_FEED_BASELINE_WINDOW   = 5;     // keep the last 5 successful feed sizes for baseline
+
+    const META_MISSED_RUNS = '_erp_sync_missed_runs';
+
+    /**
      * Action Scheduler hook for processing stock batch.
      */
     const HOOK_PROCESS_STOCK_BATCH = 'erp_sync_process_stock_batch';
@@ -641,9 +662,22 @@ class Sync_Service {
             // Mark sync as complete ONLY after all batches have been processed
             $is_sync_complete = ( $processed_batches === $total_chunks );
 
-            // Orphan cleanup permanently disabled - products not in feed will not be set to out of stock
-            $orphan_count = 0;
-            Logger::instance()->log( 'Orphan cleanup disabled by configuration. Skipping.', [ 'session_id' => $session_id, 'operation' => 'stock_update' ] );
+            // Orphan cleanup — only on full feeds (vendor_codes empty) and only when
+            // the run completed cleanly. Partial syncs (single SKU lookups) and
+            // failed runs must never trigger orphan logic.
+            $orphan_result = [
+                'enabled'         => false,
+                'dry_run'         => false,
+                'skipped_reason'  => '',
+                'candidates'      => 0,
+                'over_threshold'  => 0,
+                'zeroed'          => 0,
+                'cap_hit'         => false,
+            ];
+            if ( empty( $vendor_codes ) && $is_sync_complete ) {
+                $orphan_result = $this->process_orphans_with_safety_rails( $session_id, $total );
+            }
+            $orphan_count = (int) $orphan_result['zeroed'];
 
             // Update last sync time
             update_option( self::OPTION_LAST_STOCK_SYNC, current_time( 'mysql' ) );
@@ -657,6 +691,7 @@ class Sync_Service {
                 'skipped'           => $aggregate_stats['skipped'],
                 'errors'            => $aggregate_stats['errors'],
                 'orphans_zeroed'    => $orphan_count,
+                'orphan_summary'    => $orphan_result,
                 'user'              => wp_get_current_user()->user_login ?? 'system',
             ] );
 
@@ -670,6 +705,7 @@ class Sync_Service {
                 'skipped'        => $aggregate_stats['skipped'],
                 'errors'         => $aggregate_stats['errors'],
                 'orphans_zeroed' => $orphan_count,
+                'orphan_summary' => $orphan_result,
             ];
 
         } catch ( \Throwable $e ) {
@@ -686,6 +722,283 @@ class Sync_Service {
                 delete_transient( self::TRANSIENT_LOCK_STOCK );
             }
         }
+    }
+
+    /**
+     * Orphan cleanup with safety rails. An "orphan" is an ERP-managed product
+     * that did NOT receive the current sync session's stamp — i.e. its SKU was
+     * absent from the ERP stock feed this run.
+     *
+     * Safety layers (must all clear for any product to be zeroed):
+     *   1. Master switch (OPTION_ORPHAN_ENABLED) is on.
+     *   2. Current feed size >= median(baseline) * OPTION_ORPHAN_FEED_MIN_RATIO.
+     *      Protects against partial feeds (ERP returning 200 rows when usual is 2900).
+     *   3. Per-product miss counter >= OPTION_ORPHAN_MISS_THRESHOLD. One missed run
+     *      is never enough.
+     *   4. Per-run cap (OPTION_ORPHAN_PER_RUN_CAP) — even after thresholds clear,
+     *      never zero more than N products per run. Anything over is logged.
+     *   5. Excluded-SKU allowlist (erp_sync_excluded_skus()) is honored.
+     *   6. Dry-run mode (OPTION_ORPHAN_DRY_RUN) blocks any DB write — log only.
+     *
+     * @param string $session_id Current sync session identifier (must match what
+     *                           was stamped on products by set_product_stock_data).
+     * @param int    $feed_size  Number of rows the ERP returned this run.
+     * @return array{enabled:bool, dry_run:bool, skipped_reason:string, candidates:int, over_threshold:int, zeroed:int, cap_hit:bool}
+     */
+    public function process_orphans_with_safety_rails( string $session_id, int $feed_size ): array {
+        $result = [
+            'enabled'         => (bool) get_option( self::OPTION_ORPHAN_ENABLED, false ),
+            'dry_run'         => (bool) get_option( self::OPTION_ORPHAN_DRY_RUN, true ),
+            'skipped_reason'  => '',
+            'candidates'      => 0,
+            'over_threshold'  => 0,
+            'zeroed'          => 0,
+            'cap_hit'         => false,
+        ];
+
+        if ( ! $result['enabled'] ) {
+            $result['skipped_reason'] = 'disabled';
+            Logger::instance()->log( 'Orphan cleanup: skipped (master switch off)', [ 'session_id' => $session_id ] );
+            return $result;
+        }
+
+        if ( empty( $session_id ) ) {
+            $result['skipped_reason'] = 'no_session_id';
+            Logger::instance()->log( 'Orphan cleanup: skipped (no session id)', [] );
+            return $result;
+        }
+
+        $threshold   = max( 1, (int) get_option( self::OPTION_ORPHAN_MISS_THRESHOLD, self::ORPHAN_DEFAULT_THRESHOLD ) );
+        $per_run_cap = max( 1, (int) get_option( self::OPTION_ORPHAN_PER_RUN_CAP, self::ORPHAN_DEFAULT_PER_RUN_CAP ) );
+        $min_ratio   = (float) get_option( self::OPTION_ORPHAN_FEED_MIN_RATIO, self::ORPHAN_DEFAULT_FEED_MIN_RATIO );
+
+        // ===== Safety #2: Feed-size sanity =====
+        // Compare current feed size against a rolling median of recent feed sizes.
+        // The very first run after the feature is enabled has no baseline yet,
+        // so we record but don't compare on that run.
+        $baseline = (array) get_option( self::OPTION_ORPHAN_FEED_BASELINE, [] );
+        $baseline = array_values( array_filter( array_map( 'intval', $baseline ), function ( $v ) { return $v > 0; } ) );
+
+        if ( ! empty( $baseline ) ) {
+            $sorted = $baseline;
+            sort( $sorted );
+            $median = $sorted[ (int) floor( count( $sorted ) / 2 ) ];
+            $threshold_size = (int) floor( $median * $min_ratio );
+            if ( $feed_size < $threshold_size ) {
+                $result['skipped_reason'] = sprintf(
+                    'feed_too_small (current=%d, median_baseline=%d, threshold=%d, ratio=%.2f)',
+                    $feed_size, $median, $threshold_size, $min_ratio
+                );
+                Logger::instance()->log( 'Orphan cleanup: skipped — feed too small', [
+                    'session_id'      => $session_id,
+                    'feed_size'       => $feed_size,
+                    'baseline_median' => $median,
+                    'threshold_size'  => $threshold_size,
+                    'min_ratio'       => $min_ratio,
+                    'baseline'        => $baseline,
+                ] );
+                // Do NOT update baseline on a suspect feed — preserves the good median.
+                return $result;
+            }
+        }
+
+        // Feed passed sanity — update rolling baseline.
+        $baseline[] = $feed_size;
+        if ( count( $baseline ) > self::ORPHAN_FEED_BASELINE_WINDOW ) {
+            $baseline = array_slice( $baseline, -self::ORPHAN_FEED_BASELINE_WINDOW );
+        }
+        update_option( self::OPTION_ORPHAN_FEED_BASELINE, $baseline );
+
+        // ===== Candidate query =====
+        // Find ERP-managed products whose session_id != current (or is missing).
+        // _erp_sync_managed=1 is required: we never zero products that have never
+        // been seen by ERP sync (e.g. manually-added products).
+        global $wpdb;
+        $candidate_ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT p.ID
+             FROM {$wpdb->posts} p
+             INNER JOIN {$wpdb->postmeta} pm_managed
+                 ON p.ID = pm_managed.post_id
+                 AND pm_managed.meta_key = '_erp_sync_managed'
+                 AND pm_managed.meta_value = '1'
+             LEFT JOIN {$wpdb->postmeta} pm_session
+                 ON p.ID = pm_session.post_id
+                 AND pm_session.meta_key = '_erp_sync_session_id'
+             WHERE p.post_type = 'product'
+               AND p.post_status IN ('publish','draft','private')
+               AND ( pm_session.meta_value IS NULL OR pm_session.meta_value != %s )",
+            $session_id
+        ) );
+        $candidate_ids = array_map( 'intval', (array) $candidate_ids );
+
+        // Deduplicate by SKU: KA source + EN translation share the same SKU. The
+        // propagate_to_wpml_translations() call will zero the EN copy when we
+        // zero the KA source, so processing only one per SKU is correct AND
+        // makes the per-run cap measure "unique products" instead of post rows.
+        // Prefer the lower post ID (typically the KA source, since translations
+        // were created later).
+        if ( ! empty( $candidate_ids ) ) {
+            sort( $candidate_ids );
+            $by_sku = [];
+            $sku_rows = $wpdb->get_results( "SELECT post_id, meta_value AS sku FROM {$wpdb->postmeta} WHERE meta_key='_sku' AND post_id IN (" . implode( ',', array_map( 'intval', $candidate_ids ) ) . ")", ARRAY_A );
+            $id_to_sku = [];
+            foreach ( (array) $sku_rows as $r ) {
+                $id_to_sku[ (int) $r['post_id'] ] = (string) $r['sku'];
+            }
+            $deduped = [];
+            $seen_skus = [];
+            foreach ( $candidate_ids as $pid ) {
+                $sku = $id_to_sku[ $pid ] ?? '';
+                if ( $sku === '' ) {
+                    // No SKU — process individually
+                    $deduped[] = $pid;
+                    continue;
+                }
+                if ( isset( $seen_skus[ $sku ] ) ) {
+                    continue;
+                }
+                $seen_skus[ $sku ] = true;
+                $deduped[] = $pid;
+            }
+            $candidate_ids = $deduped;
+        }
+
+        $result['candidates'] = count( $candidate_ids );
+
+        if ( empty( $candidate_ids ) ) {
+            Logger::instance()->log( 'Orphan cleanup: no candidates', [ 'session_id' => $session_id ] );
+            $result['skipped_reason'] = 'no_candidates';
+            return $result;
+        }
+
+        $excluded_skus = function_exists( 'erp_sync_excluded_skus' ) ? erp_sync_excluded_skus() : [];
+        $excluded_skus = array_flip( array_map( 'strval', (array) $excluded_skus ) );
+
+        $zeroed_log    = [];
+        $over_thresh   = [];
+        $cap_remaining = $per_run_cap;
+        $is_dry_run    = $result['dry_run'];
+
+        foreach ( $candidate_ids as $product_id ) {
+            $product = wc_get_product( $product_id );
+            if ( ! $product ) {
+                continue;
+            }
+
+            $sku = (string) $product->get_sku();
+            if ( $sku !== '' && isset( $excluded_skus[ $sku ] ) ) {
+                // Excluded SKU — skip silently
+                continue;
+            }
+
+            // Bump miss counter
+            $missed = (int) $product->get_meta( self::META_MISSED_RUNS, true );
+            $missed++;
+
+            if ( $missed < $threshold ) {
+                // Not yet over threshold — just persist the counter and move on
+                $product->update_meta_data( self::META_MISSED_RUNS, $missed );
+                $product->save();
+                unset( $product );
+                continue;
+            }
+
+            // Over threshold
+            $result['over_threshold']++;
+            $over_thresh[] = [ 'id' => $product_id, 'sku' => $sku, 'missed' => $missed ];
+
+            // Fast-path: already at stock=0 and outofstock. Nothing to do — keep
+            // the counter pinned at threshold so we don't grow forever, but DO NOT
+            // count toward per-run cap (this product is already in the desired
+            // state; the cap exists to limit destructive change, not no-ops).
+            $current_stock  = (int) $product->get_stock_quantity();
+            $current_status = (string) $product->get_stock_status();
+            if ( $current_stock <= 0 && $current_status === 'outofstock' ) {
+                $product->update_meta_data( self::META_MISSED_RUNS, $threshold );
+                $product->save();
+                unset( $product );
+                continue;
+            }
+
+            if ( $cap_remaining <= 0 ) {
+                // Per-run cap hit — log but don't zero this one; keep counter at threshold-1
+                // so a future run can pick it up but we don't grow the counter unboundedly.
+                $result['cap_hit'] = true;
+                $product->update_meta_data( self::META_MISSED_RUNS, $threshold );
+                $product->save();
+                unset( $product );
+                continue;
+            }
+
+            $old_stock = (int) $product->get_stock_quantity();
+
+            if ( $is_dry_run ) {
+                // Dry-run: log what WOULD happen, but persist the counter so we can see
+                // multiple cycles of "would-have-zeroed" build up correctly.
+                // Decrement cap_remaining so the dry-run output accurately mirrors what
+                // a real run would have done (cap applies identically).
+                $product->update_meta_data( self::META_MISSED_RUNS, $missed );
+                $product->save();
+                $zeroed_log[] = [ 'id' => $product_id, 'sku' => $sku, 'old_stock' => $old_stock, 'missed' => $missed, 'dry' => true ];
+                $cap_remaining--;
+            } else {
+                // Real zero — match sync_single_product not-found behavior exactly
+                $product->set_manage_stock( true );
+                $product->set_stock_quantity( 0 );
+                $product->set_stock_status( 'outofstock' );
+                $product->update_meta_data( '_erp_sync_warehouse_data', [] );
+                $product->update_meta_data( '_erp_sync_zeroed_reason', 'not_found_in_erp_x_runs' );
+                $product->update_meta_data( '_erp_sync_orphan_zeroed_at', current_time( 'mysql' ) );
+                $product->update_meta_data( '_erp_sync_orphan_session_id', $session_id );
+                $product->update_meta_data( '_erp_sync_last_update', current_time( 'mysql' ) );
+                $product->update_meta_data( self::META_MISSED_RUNS, $missed );
+                $product->save();
+
+                wp_set_object_terms( $product->get_id(), [], Product_Service::TAXONOMY_BRANCH );
+
+                $this->product_service->propagate_to_wpml_translations( $product );
+
+                if ( class_exists( '\ERPSync\Audit_Logger' ) ) {
+                    Audit_Logger::log_change(
+                        $product,
+                        'orphan_zeroed',
+                        $old_stock,
+                        0,
+                        sprintf( 'SKU %s missing from ERP feed for %d consecutive runs. Stock set to 0.', $sku, $missed )
+                    );
+                }
+
+                $result['zeroed']++;
+                $cap_remaining--;
+                $zeroed_log[] = [ 'id' => $product_id, 'sku' => $sku, 'old_stock' => $old_stock, 'missed' => $missed, 'dry' => false ];
+            }
+
+            unset( $product );
+        }
+
+        // Single consolidated log entry per run (avoid log spam on large changes)
+        Logger::instance()->log( 'Orphan cleanup run summary', [
+            'session_id'     => $session_id,
+            'feed_size'      => $feed_size,
+            'candidates'     => $result['candidates'],
+            'over_threshold' => $result['over_threshold'],
+            'zeroed'         => $result['zeroed'],
+            'dry_run'        => $is_dry_run,
+            'cap_hit'        => $result['cap_hit'],
+            'threshold'      => $threshold,
+            'per_run_cap'    => $per_run_cap,
+            // Truncate detail logs to keep entry compact
+            'zeroed_sample'  => array_slice( $zeroed_log, 0, 20 ),
+            'over_sample'    => array_slice( $over_thresh, 0, 20 ),
+        ] );
+
+        update_option( self::OPTION_ORPHAN_LAST_RESULT, [
+            'time'       => current_time( 'mysql' ),
+            'session_id' => $session_id,
+            'summary'    => $result,
+        ] );
+
+        return $result;
     }
 
     /**

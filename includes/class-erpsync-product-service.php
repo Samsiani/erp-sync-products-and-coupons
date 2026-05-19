@@ -898,6 +898,13 @@ class Product_Service {
             $product->update_meta_data( '_erp_sync_session_id', $session_id );
         }
 
+        // Product is back in feed — reset the orphan miss counter and clear the
+        // "zeroed because missing" reason if it was set in a previous run.
+        $product->delete_meta_data( '_erp_sync_missed_runs' );
+        if ( (string) $product->get_meta( '_erp_sync_zeroed_reason', true ) !== '' ) {
+            $product->delete_meta_data( '_erp_sync_zeroed_reason' );
+        }
+
         // Assign branch taxonomy terms (performance-optimized)
         // Pass only valid warehouses so taxonomy accurately reflects available branches
         $this->assign_branch_terms( $product, $valid_warehouses );
@@ -971,15 +978,33 @@ class Product_Service {
         }
 
         // Snapshot canonical values from the source
-        $regular_price  = $source->get_regular_price();
-        $sale_price     = $source->get_sale_price();
-        $stock_qty      = $source->get_stock_quantity();
-        $stock_status   = $source->get_stock_status();
-        $manage_stock   = $source->get_manage_stock();
-        $warehouse_data = $source->get_meta( '_erp_sync_warehouse_data', true );
-        $post_status    = $source->get_status();
-        $drafted_flag   = (string) $source->get_meta( '_erp_sync_drafted_by_exclusion', true );
-        $all_branches   = $source->get_meta( '_erp_sync_all_branches', true );
+        $regular_price     = $source->get_regular_price();
+        $sale_price        = $source->get_sale_price();
+        $stock_qty         = $source->get_stock_quantity();
+        $stock_status      = $source->get_stock_status();
+        $manage_stock      = $source->get_manage_stock();
+        $warehouse_data    = $source->get_meta( '_erp_sync_warehouse_data', true );
+        $post_status       = $source->get_status();
+        $drafted_flag      = (string) $source->get_meta( '_erp_sync_drafted_by_exclusion', true );
+        $all_branches      = $source->get_meta( '_erp_sync_all_branches', true );
+        // Mirror session_id + stock_updated_at so translations are visible to the
+        // orphan-cleanup query (it filters on _erp_sync_session_id; if translations
+        // never carry it, every EN copy would look orphaned and get zeroed).
+        $session_id        = (string) $source->get_meta( '_erp_sync_session_id', true );
+        $stock_updated_at  = (string) $source->get_meta( '_erp_sync_stock_updated_at', true );
+        $zeroed_reason     = (string) $source->get_meta( '_erp_sync_zeroed_reason', true );
+
+        // Snapshot source's branch taxonomy terms so translations show the same
+        // availability filter (and clear them when source is zeroed).
+        $source_branch_term_ids = wp_get_object_terms(
+            $source_id,
+            self::TAXONOMY_BRANCH,
+            [ 'fields' => 'ids' ]
+        );
+        if ( is_wp_error( $source_branch_term_ids ) ) {
+            $source_branch_term_ids = [];
+        }
+        $source_branch_term_ids = array_map( 'intval', (array) $source_branch_term_ids );
 
         $mirrored = [];
 
@@ -1014,6 +1039,22 @@ class Product_Service {
             $tr_product->update_meta_data( '_erp_sync_managed', 1 );
             $tr_product->update_meta_data( '_erp_sync_synced_at', current_time( 'mysql' ) );
 
+            // Mirror session_id + stock_updated_at so orphan cleanup sees this
+            // translation as "touched" in the current sync session.
+            if ( $session_id !== '' ) {
+                $tr_product->update_meta_data( '_erp_sync_session_id', $session_id );
+            }
+            if ( $stock_updated_at !== '' ) {
+                $tr_product->update_meta_data( '_erp_sync_stock_updated_at', $stock_updated_at );
+            }
+
+            // Mirror zeroed_reason so the translation reflects why it's out of stock
+            if ( $zeroed_reason !== '' ) {
+                $tr_product->update_meta_data( '_erp_sync_zeroed_reason', $zeroed_reason );
+            } else {
+                $tr_product->delete_meta_data( '_erp_sync_zeroed_reason' );
+            }
+
             // Mirror full branch list (incl. excluded) — admin-only signal
             if ( is_array( $all_branches ) ) {
                 $tr_product->update_meta_data( '_erp_sync_all_branches', $all_branches );
@@ -1032,6 +1073,15 @@ class Product_Service {
             }
 
             $tr_product->save();
+
+            // Mirror branch taxonomy terms so translations expose the same
+            // branch filter as the source (including clearing on zero stock).
+            wp_set_object_terms(
+                $tr_id,
+                $source_branch_term_ids,
+                self::TAXONOMY_BRANCH,
+                false
+            );
 
             $mirrored[] = $tr_id;
             unset( $tr_product );
@@ -1425,6 +1475,15 @@ class Product_Service {
      * @return int Number of orphaned products updated.
      */
     public function zero_out_orphans( string $session_id ): int {
+        // LEGACY — DO NOT USE. This is the method that caused the 2026-01-27 incident
+        // (zeroed every EN translation because WPML translations were never stamped
+        // with session_id). Replaced by Sync_Service::process_orphans_with_safety_rails().
+        // Hard-disabled here so accidental Action Scheduler reschedules can never fire it.
+        Logger::instance()->log( 'zero_out_orphans (legacy) called — no-op. Use Sync_Service::process_orphans_with_safety_rails().', [
+            'session_id' => $session_id,
+        ] );
+        return 0;
+        // phpcs:ignore — keeping legacy code below for reference; never executed.
         global $wpdb;
 
         if ( empty( $session_id ) ) {

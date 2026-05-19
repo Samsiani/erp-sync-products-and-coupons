@@ -209,6 +209,16 @@ class Admin {
         update_option( Cron::OPTION_STOCK_CRON_ENABLED, $stock_cron_enabled );
         update_option( Cron::OPTION_STOCK_CRON_INTERVAL, $stock_cron_interval );
 
+        // Orphan Cleanup Settings
+        update_option( Sync_Service::OPTION_ORPHAN_ENABLED, isset( $_POST['orphan_enabled'] ) ? 1 : 0 );
+        update_option( Sync_Service::OPTION_ORPHAN_DRY_RUN, isset( $_POST['orphan_dry_run'] ) ? 1 : 0 );
+        update_option( Sync_Service::OPTION_ORPHAN_MISS_THRESHOLD, max( 1, min( 50, (int) ( $_POST['orphan_threshold'] ?? Sync_Service::ORPHAN_DEFAULT_THRESHOLD ) ) ) );
+        update_option( Sync_Service::OPTION_ORPHAN_PER_RUN_CAP, max( 1, min( 10000, (int) ( $_POST['orphan_per_run_cap'] ?? Sync_Service::ORPHAN_DEFAULT_PER_RUN_CAP ) ) ) );
+        $ratio_input = (float) ( $_POST['orphan_feed_min_ratio'] ?? Sync_Service::ORPHAN_DEFAULT_FEED_MIN_RATIO );
+        if ( $ratio_input < 0.05 ) $ratio_input = 0.05;
+        if ( $ratio_input > 1.0 )  $ratio_input = 1.0;
+        update_option( Sync_Service::OPTION_ORPHAN_FEED_MIN_RATIO, $ratio_input );
+
         // Coupons Cron Settings
         $cron_enabled  = isset( $_POST['cron_enabled'] ) ? 1 : 0;
         $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_10min' );
@@ -1058,6 +1068,15 @@ class Admin {
         $stock_cron_next     = class_exists('\ERPSync\Cron') ? Cron::next_stock_run_human() : '—';
         $stock_cron_last_res = get_option( Cron::OPTION_STOCK_CRON_LAST_RESULT, [] );
 
+        // Orphan Cleanup (zero out products that disappear from ERP feed)
+        $orphan_enabled        = (bool) get_option( Sync_Service::OPTION_ORPHAN_ENABLED, false );
+        $orphan_dry_run        = (bool) get_option( Sync_Service::OPTION_ORPHAN_DRY_RUN, true );
+        $orphan_threshold      = (int) get_option( Sync_Service::OPTION_ORPHAN_MISS_THRESHOLD, Sync_Service::ORPHAN_DEFAULT_THRESHOLD );
+        $orphan_per_run_cap    = (int) get_option( Sync_Service::OPTION_ORPHAN_PER_RUN_CAP, Sync_Service::ORPHAN_DEFAULT_PER_RUN_CAP );
+        $orphan_feed_min_ratio = (float) get_option( Sync_Service::OPTION_ORPHAN_FEED_MIN_RATIO, Sync_Service::ORPHAN_DEFAULT_FEED_MIN_RATIO );
+        $orphan_baseline       = (array) get_option( Sync_Service::OPTION_ORPHAN_FEED_BASELINE, [] );
+        $orphan_last_result    = (array) get_option( Sync_Service::OPTION_ORPHAN_LAST_RESULT, [] );
+
         // Attribute Mapping
         $attribute_mapping = get_option( Product_Service::OPTION_ATTRIBUTE_MAPPING, [] );
         $attr_mapping_brand      = $attribute_mapping['Brand']      ?? 'pa_brand';
@@ -1222,6 +1241,77 @@ class Admin {
                                 </p>
                             </td>
                         </tr>
+                    </table>
+
+                    <h2><?php _e( 'Orphan Cleanup (auto-zero missing SKUs)', 'erp-sync' ); ?></h2>
+                    <p class="description">
+                        <?php _e( 'When a product\'s SKU stops appearing in the ERP stock feed, this feature automatically sets that product\'s stock to 0 / out-of-stock — matching the behavior of the per-product "ERP Sync Update" button.', 'erp-sync' ); ?>
+                        <strong><?php _e( 'Default is OFF.', 'erp-sync' ); ?></strong>
+                        <?php _e( 'Always enable Dry-Run first, watch a few cron cycles, then turn Dry-Run off.', 'erp-sync' ); ?>
+                    </p>
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="orphan_enabled"><?php _e( 'Enable Orphan Cleanup', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <label><input type="checkbox" id="orphan_enabled" name="orphan_enabled" value="1" <?php checked( $orphan_enabled ); ?>> <?php _e( 'Run orphan detection at the end of each successful bulk stock sync.', 'erp-sync' ); ?></label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="orphan_dry_run"><?php _e( 'Dry-Run Mode', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <label><input type="checkbox" id="orphan_dry_run" name="orphan_dry_run" value="1" <?php checked( $orphan_dry_run ); ?>> <?php _e( 'Log what would be zeroed but do NOT change anything. Use this until you confirm the right SKUs are detected.', 'erp-sync' ); ?></label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="orphan_threshold"><?php _e( 'Consecutive Miss Threshold', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <input type="number" min="1" max="50" id="orphan_threshold" name="orphan_threshold" value="<?php echo esc_attr( $orphan_threshold ); ?>" class="small-text">
+                                <p class="description"><?php _e( 'A SKU must be missing from the ERP feed for this many consecutive runs before it gets zeroed. Protects against single bad feed runs. Default: 3.', 'erp-sync' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="orphan_per_run_cap"><?php _e( 'Per-Run Cap', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <input type="number" min="1" max="10000" id="orphan_per_run_cap" name="orphan_per_run_cap" value="<?php echo esc_attr( $orphan_per_run_cap ); ?>" class="small-text">
+                                <p class="description"><?php _e( 'Hard cap on the number of products zeroed in a single run. Anything over this is logged but left untouched. Default: 100.', 'erp-sync' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="orphan_feed_min_ratio"><?php _e( 'Feed Sanity Ratio', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <input type="number" min="0.05" max="1" step="0.05" id="orphan_feed_min_ratio" name="orphan_feed_min_ratio" value="<?php echo esc_attr( $orphan_feed_min_ratio ); ?>" class="small-text">
+                                <p class="description">
+                                    <?php _e( 'Minimum size of the current feed compared to the rolling median of the last 5 feeds. If the feed shrinks below this ratio, orphan cleanup is skipped entirely (protects against partial feeds).', 'erp-sync' ); ?>
+                                    <?php if ( ! empty( $orphan_baseline ) ) : ?>
+                                        <br><strong><?php _e( 'Recent feed sizes:', 'erp-sync' ); ?></strong> <?php echo esc_html( implode( ', ', array_map( 'intval', $orphan_baseline ) ) ); ?>
+                                    <?php endif; ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <?php if ( ! empty( $orphan_last_result ) ) : ?>
+                        <tr>
+                            <th><?php _e( 'Last Orphan Run', 'erp-sync' ); ?></th>
+                            <td>
+                                <p>
+                                    <?php
+                                    $s = (array) ( $orphan_last_result['summary'] ?? [] );
+                                    echo esc_html( sprintf(
+                                        '%s — candidates: %d, over threshold: %d, zeroed: %d%s%s',
+                                        $orphan_last_result['time'] ?? '—',
+                                        (int) ( $s['candidates'] ?? 0 ),
+                                        (int) ( $s['over_threshold'] ?? 0 ),
+                                        (int) ( $s['zeroed'] ?? 0 ),
+                                        ! empty( $s['dry_run'] ) ? ' (DRY RUN)' : '',
+                                        ! empty( $s['cap_hit'] ) ? ' [CAP HIT]' : ''
+                                    ) );
+                                    if ( ! empty( $s['skipped_reason'] ) ) {
+                                        echo '<br><em>' . esc_html( sprintf( __( 'Skipped: %s', 'erp-sync' ), $s['skipped_reason'] ) ) . '</em>';
+                                    }
+                                    ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <?php endif; ?>
                     </table>
 
                     <h2><?php _e( 'Attribute Mapping', 'erp-sync' ); ?></h2>
