@@ -10,7 +10,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * - If _erp_sync_is_deleted=yes => 0
  * - If birthday window (-1, 0, +1 day of DOB) => 20
  * - Else base discount
- * Restricts usage to logged-in users.
+ *
+ * Note: as of v1.4.6 the coupon can be used by guests and is not restricted
+ * by the "Allowed Phone Numbers" field. The field is still stored on the
+ * coupon (informational only) but no longer affects validity.
  */
 class Coupon_Dynamic {
 
@@ -18,8 +21,6 @@ class Coupon_Dynamic {
 
     public static function init(): void {
         add_filter( 'woocommerce_coupon_get_amount', [ __CLASS__, 'filter_amount' ], 25, 2 );
-        add_filter( 'woocommerce_coupon_is_valid', [ __CLASS__, 'validate_user_login' ], 25, 2 );
-        add_filter( 'woocommerce_coupon_is_valid', [ __CLASS__, 'validate_allowed_phones' ], 26, 2 );
         add_filter( 'woocommerce_coupon_get_description', [ __CLASS__, 'append_dynamic_info' ], 25, 2 );
     }
 
@@ -40,15 +41,6 @@ class Coupon_Dynamic {
         return (int) $base;
     }
 
-    public static function validate_user_login( bool $valid, \WC_Coupon $coupon ): bool {
-        $id = $coupon->get_id();
-        if ( get_post_meta( $id, '_erp_sync_managed', true ) && ! is_user_logged_in() ) {
-            wc_add_notice( __( 'You must be logged in to use this discount card coupon.', 'erp-sync' ), 'error' );
-            return false;
-        }
-        return $valid;
-    }
-
     public static function append_dynamic_info( string $description, \WC_Coupon $coupon ): string {
         $id = $coupon->get_id();
         if ( ! get_post_meta( $id, '_erp_sync_managed', true ) ) return $description;
@@ -65,47 +57,6 @@ class Coupon_Dynamic {
             }
         }
         return trim( $description . ' ' . implode( ' ', $extra ) );
-    }
-
-    /**
-     * Validate coupon against allowed phone numbers list.
-     */
-    public static function validate_allowed_phones( bool $valid, \WC_Coupon $coupon ): bool {
-        if ( ! $valid ) {
-            return $valid;
-        }
-
-        $allowed_raw = (string) get_post_meta( $coupon->get_id(), '_erp_sync_allowed_phones', true );
-        if ( $allowed_raw === '' ) {
-            return $valid;
-        }
-
-        $allowed_phones = array_filter( array_map( 'trim', explode( ',', $allowed_raw ) ) );
-        if ( empty( $allowed_phones ) ) {
-            return $valid;
-        }
-
-        $customer_phone = '';
-        if ( function_exists( 'WC' ) && WC()->customer ) {
-            $customer_phone = WC()->customer->get_billing_phone();
-        }
-
-        $normalized_customer = self::normalize_phone( $customer_phone );
-        $normalized_allowed  = array_map( [ __CLASS__, 'normalize_phone' ], $allowed_phones );
-
-        if ( $normalized_customer === '' || ! in_array( $normalized_customer, $normalized_allowed, true ) ) {
-            wc_add_notice( __( 'This coupon is not valid for your phone number.', 'erp-sync' ), 'error' );
-            return false;
-        }
-
-        return $valid;
-    }
-
-    /**
-     * Normalize a phone number by stripping all non-digit characters.
-     */
-    public static function normalize_phone( string $phone ): string {
-        return preg_replace( '/\D/', '', $phone );
     }
 
     private static function is_in_birthday_window( string $dob ): bool {
