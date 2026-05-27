@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ERP Sync Products and Coupons
  * Description: Synchronize products (catalog, stock, prices) and discount cards (coupons) from 1C/IBS SOAP WebExchange service into WooCommerce.
- * Version: 1.4.6
+ * Version: 1.4.7
  * Author: ERPSync
  * Text Domain: erp-sync
  * Requires at least: 5.8
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Constants
  */
-define( 'ERPSYNC_VERSION', '1.4.6' );
+define( 'ERPSYNC_VERSION', '1.4.7' );
 define( 'ERPSYNC_FILE', __FILE__ );
 define( 'ERPSYNC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ERPSYNC_URL', plugin_dir_url( __FILE__ ) );
@@ -193,6 +193,7 @@ require_once ERPSYNC_DIR . 'includes/class-erpsync-coupon-dynamic.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-admin.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-cron.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-frontend.php';
+require_once ERPSYNC_DIR . 'includes/class-erpsync-branch-cloud.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-cart-stock-check.php';
 require_once ERPSYNC_DIR . 'includes/functions-helpers.php';
 
@@ -239,6 +240,11 @@ function erp_sync_bootstrap(): void {
     // Initialize Frontend (branch stock display)
     if ( class_exists( '\ERPSync\Frontend' ) ) {
         \ERPSync\Frontend::init();
+    }
+
+    // Initialize Branch Cloud (shortcode + sidebar widget + stackable filter)
+    if ( class_exists( '\ERPSync\Branch_Cloud' ) ) {
+        \ERPSync\Branch_Cloud::init();
     }
 
     // Initialize Cart Stock Check (re-verify ERP stock on add-to-cart)
