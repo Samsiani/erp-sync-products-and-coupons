@@ -406,8 +406,10 @@ class Branch_Cloud {
             'order'      => $order,
             'show_count' => 0, // no visible (N)
             'topic_count_text_callback' => static function ( $count ) {
-                /* translators: %s: number of products */
-                return sprintf( _n( '%s product', '%s products', $count, 'erp-sync' ), number_format_i18n( $count ) );
+                // Use WooCommerce's text domain so the aria-label inherits
+                // WC's existing "%s product"/"%s products" translations
+                // (e.g. ka_GE → "%s პროდუქტი") without us shipping a .po.
+                return sprintf( _n( '%s product', '%s products', $count, 'woocommerce' ), number_format_i18n( $count ) );
             },
             'echo' => false,
         ] );
