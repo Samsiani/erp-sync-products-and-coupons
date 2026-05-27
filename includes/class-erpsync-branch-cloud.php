@@ -146,8 +146,12 @@ class Branch_Cloud {
     /**
      * Toggle URL for one branch term: removes the filter if this slug is
      * currently the active one, otherwise sets it.
+     *
+     * @param \WP_Term|\stdClass $term Term object — adaptive path passes
+     *                                 a stdClass built from raw SQL, plain
+     *                                 path passes WP_Term from get_terms().
      */
-    private static function term_toggle_url( \WP_Term $term ): string {
+    private static function term_toggle_url( object $term ): string {
         $base    = self::current_url_without( [ self::QUERY_VAR, 'paged' ] );
         $current = self::current_branch_slugs();
         if ( in_array( $term->slug, $current, true ) ) {
