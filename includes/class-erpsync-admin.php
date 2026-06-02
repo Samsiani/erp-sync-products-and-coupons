@@ -219,6 +219,20 @@ class Admin {
         if ( $ratio_input > 1.0 )  $ratio_input = 1.0;
         update_option( Sync_Service::OPTION_ORPHAN_FEED_MIN_RATIO, $ratio_input );
 
+        // Exclusions — products/categories that are skipped during every sync.
+        $raw_skus = (string) ( $_POST['excluded_skus'] ?? '' );
+        $skus     = preg_split( '/[\r\n,]+/', $raw_skus );
+        $skus     = array_filter( array_map( static function ( $s ) {
+            return sanitize_text_field( trim( (string) $s ) );
+        }, (array) $skus ), static function ( $s ) {
+            return '' !== $s;
+        } );
+        update_option( ERP_SYNC_OPTION_EXCLUDED_SKUS, array_values( array_unique( $skus ) ) );
+
+        $cat_ids = isset( $_POST['excluded_cat_ids'] ) ? (array) $_POST['excluded_cat_ids'] : [];
+        $cat_ids = array_values( array_unique( array_filter( array_map( 'intval', $cat_ids ) ) ) );
+        update_option( ERP_SYNC_OPTION_EXCLUDED_CAT_IDS, $cat_ids );
+
         // Coupons Cron Settings
         $cron_enabled  = isset( $_POST['cron_enabled'] ) ? 1 : 0;
         $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_10min' );
@@ -1077,6 +1091,19 @@ class Admin {
         $orphan_baseline       = (array) get_option( Sync_Service::OPTION_ORPHAN_FEED_BASELINE, [] );
         $orphan_last_result    = (array) get_option( Sync_Service::OPTION_ORPHAN_LAST_RESULT, [] );
 
+        // Exclusions — products/categories never touched by any sync.
+        $excluded_skus_value = implode( "\n", erp_sync_excluded_skus() );
+        $excluded_cat_ids    = erp_sync_excluded_category_ids();
+        $product_categories  = function_exists( 'get_terms' ) ? get_terms( [
+            'taxonomy'   => 'product_cat',
+            'hide_empty' => false,
+            'orderby'    => 'name',
+            'order'      => 'ASC',
+        ] ) : [];
+        if ( ! is_array( $product_categories ) ) {
+            $product_categories = [];
+        }
+
         // Attribute Mapping
         $attribute_mapping = get_option( Product_Service::OPTION_ATTRIBUTE_MAPPING, [] );
         $attr_mapping_brand      = $attribute_mapping['Brand']      ?? 'pa_brand';
@@ -1239,6 +1266,33 @@ class Admin {
                                     }
                                     ?>
                                 </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <h2><?php _e( 'Exclusions (never go out of stock)', 'erp-sync' ); ?></h2>
+                    <p class="description">
+                        <?php _e( 'Products and categories listed here are <strong>completely skipped by every sync</strong> — automatic cron, manual buttons, and orphan cleanup. Their stock and price are never changed by ERP, even when their SKU is absent from the feed. Use this for items like gift cards that have no 1C inventory.', 'erp-sync' ); ?>
+                    </p>
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="excluded_skus"><?php _e( 'Excluded SKUs', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <textarea id="excluded_skus" name="excluded_skus" rows="4" class="large-text code" placeholder="ART-GIFT-3496"><?php echo esc_textarea( $excluded_skus_value ); ?></textarea>
+                                <p class="description"><?php _e( 'One SKU per line (commas also accepted). Products with these SKUs are never synced or zeroed.', 'erp-sync' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="excluded_cat_ids"><?php _e( 'Excluded Categories', 'erp-sync' ); ?></label></th>
+                            <td>
+                                <select id="excluded_cat_ids" name="excluded_cat_ids[]" multiple size="10" style="min-width:320px;max-width:100%;">
+                                    <?php foreach ( $product_categories as $cat ) : ?>
+                                        <option value="<?php echo esc_attr( $cat->term_id ); ?>" <?php selected( in_array( (int) $cat->term_id, $excluded_cat_ids, true ) ); ?>>
+                                            <?php echo esc_html( $cat->name ); ?> (#<?php echo (int) $cat->term_id; ?>)
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description"><?php _e( 'Hold Ctrl/Cmd to select multiple. Every product in a selected category (and its sub-categories) is skipped by all syncs.', 'erp-sync' ); ?></p>
                             </td>
                         </tr>
                     </table>

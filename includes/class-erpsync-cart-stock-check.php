@@ -59,8 +59,8 @@ class Cart_Stock_Check {
             return $passed;
         }
 
-        // Skip excluded SKUs — never mark these out of stock
-        if ( in_array( $sku, erp_sync_excluded_skus(), true ) ) {
+        // Skip excluded SKUs/categories — never mark these out of stock
+        if ( erp_sync_is_product_excluded( $product ) ) {
             return $passed;
         }
 

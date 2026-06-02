@@ -813,6 +813,19 @@ class Product_Service {
      * @param string      $session_id Optional unique session identifier for tracking sync.
      */
     private function set_product_stock_data( \WC_Product $product, array $row, string $session_id = '' ): void {
+        // ========== EXCLUSION GUARD ==========
+        // Products/categories on the exclusion list are skipped during every
+        // sync: we never overwrite their stock or price. We still stamp the
+        // current session id so orphan cleanup treats them as "seen" (not
+        // missing), keeping their status consistent across all sync paths.
+        if ( erp_sync_is_product_excluded( $product ) ) {
+            if ( '' !== $session_id ) {
+                $product->update_meta_data( '_erp_sync_session_id', $session_id );
+                $product->save();
+            }
+            return;
+        }
+
         // ========== CAPTURE OLD VALUES FOR COMPARISON ==========
         $old_regular_price = $product->get_regular_price();
         $old_sale_price    = $product->get_sale_price();
@@ -1538,8 +1551,8 @@ class Product_Service {
                 continue;
             }
 
-            // Skip excluded SKUs — never zero these out
-            if ( in_array( $product->get_sku(), erp_sync_excluded_skus(), true ) ) {
+            // Skip excluded SKUs/categories — never zero these out
+            if ( erp_sync_is_product_excluded( $product ) ) {
                 unset( $product );
                 $processed++;
                 continue;

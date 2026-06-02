@@ -871,9 +871,6 @@ class Sync_Service {
             return $result;
         }
 
-        $excluded_skus = function_exists( 'erp_sync_excluded_skus' ) ? erp_sync_excluded_skus() : [];
-        $excluded_skus = array_flip( array_map( 'strval', (array) $excluded_skus ) );
-
         $zeroed_log    = [];
         $over_thresh   = [];
         $cap_remaining = $per_run_cap;
@@ -885,9 +882,8 @@ class Sync_Service {
                 continue;
             }
 
-            $sku = (string) $product->get_sku();
-            if ( $sku !== '' && isset( $excluded_skus[ $sku ] ) ) {
-                // Excluded SKU — skip silently
+            // Excluded SKU or category — never zero these out (skip silently).
+            if ( erp_sync_is_product_excluded( $product ) ) {
                 continue;
             }
 
