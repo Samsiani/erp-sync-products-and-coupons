@@ -92,8 +92,28 @@ class Cards_Cache {
         return is_array( $r ) ? $r : [];
     }
 
+    /**
+     * Server-wide MySQL advisory lock name for the refresh. Uses a MySQL-level
+     * lock (GET_LOCK) rather than a transient because transients are stored in
+     * the persistent object cache here (LiteSpeed), which is NOT reliably shared
+     * across separate CLI/cron processes — so a transient lock failed to prevent
+     * concurrent refreshes. GET_LOCK is per-connection, cross-process, and
+     * auto-releases if a process dies. Prefixed by table prefix to stay unique
+     * on shared DB servers.
+     */
+    private static function db_lock_name(): string {
+        global $wpdb;
+        return $wpdb->prefix . 'erp_sync_cards_refresh';
+    }
+
+    /**
+     * True when a refresh is currently in progress in ANY process.
+     */
     public static function is_refreshing(): bool {
-        return (bool) get_transient( self::LOCK_TRANSIENT );
+        global $wpdb;
+        // IS_FREE_LOCK returns 1 if free, 0 if held, NULL on error.
+        $free = $wpdb->get_var( $wpdb->prepare( 'SELECT IS_FREE_LOCK(%s)', self::db_lock_name() ) );
+        return '0' === (string) $free;
     }
 
     /**
@@ -169,10 +189,13 @@ class Cards_Cache {
     public static function refresh( bool $write_coupons = true ): array {
         global $wpdb;
 
-        if ( get_transient( self::LOCK_TRANSIENT ) ) {
+        // Acquire a cross-process MySQL lock (timeout 0 = fail fast if held).
+        $got_lock = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 0)', self::db_lock_name() ) );
+        if ( '1' !== (string) $got_lock ) {
             Logger::instance()->log( 'Cards cache refresh skipped (already running)', [] );
             return [ 'success' => false, 'skipped' => true, 'error' => 'locked' ];
         }
+        // Belt-and-suspenders transient (drives the admin "is running" hint).
         set_transient( self::LOCK_TRANSIENT, 1, 30 * MINUTE_IN_SECONDS );
 
         // We may run for many minutes in CLI/cron — lift any time limit.
@@ -330,6 +353,7 @@ class Cards_Cache {
             $stats['mem_peak_kb'] = (int) ( memory_get_peak_usage( true ) / 1024 );
             update_option( self::OPTION_LAST, $stats );
             delete_transient( self::LOCK_TRANSIENT );
+            $wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', self::db_lock_name() ) );
 
             Logger::instance()->log( 'Cards cache refresh end', $stats );
         }
