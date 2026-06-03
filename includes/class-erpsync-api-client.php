@@ -287,11 +287,18 @@ class API_Client {
                         
                         $successful_params_list[] = $params;
                         $last_response = $candidate;
-                        
+
                         Logger::instance()->log( 'InformationCards successful with params', [
                             'params' => $params,
                             'count'  => $count
                         ] );
+
+                        // InformationCards takes NO parameters (WSDL: empty struct) and
+                        // always returns the COMPLETE card list, so the first successful
+                        // response is authoritative. Each attempt is a full ~6-minute /
+                        // ~15 MB pull — trying the remaining variants would just repeat
+                        // the same fetch 3 more times (~24 min total). Stop here.
+                        break;
                     } else {
                         // Valid response but empty — store as fallback, keep trying
                         if ( $fallback_response === null ) {
