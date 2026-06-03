@@ -228,9 +228,21 @@ class API_Client {
     public function fetch_cards_remote(): array {
         // Apply security checks before API call
         do_action( 'erp_sync_before_api_call' );
-        
-        $client = $this->build_client();
-        $start = microtime(true);
+
+        // The full InformationCards response (~38k rows / ~15 MB) takes several
+        // MINUTES to build on the 1C side (~6 min observed). PHP's default 60s
+        // socket read timeout is far too short, so the read aborts early with
+        // "Error Fetching http headers". Raise the read timeout well above the
+        // observed response time for this one heavy call, and lift any time limit.
+        $cards_timeout       = max( 600, (int) $this->timeout );
+        $prev_socket_timeout = ini_get( 'default_socket_timeout' );
+        @ini_set( 'default_socket_timeout', (string) $cards_timeout );
+        if ( function_exists( 'set_time_limit' ) ) {
+            @set_time_limit( 0 );
+        }
+
+        $client = $this->build_client( $cards_timeout );
+        $start  = microtime(true);
 
         try {
             // Try different parameter formats
@@ -360,42 +372,49 @@ class API_Client {
         } catch ( \Throwable $e ) {
             $this->capture_generic_exception_artifacts( $client, $e, 'InformationCards', $start );
             throw $e;
+        } finally {
+            // Restore the global socket read timeout for subsequent (fast) calls.
+            if ( false !== $prev_socket_timeout ) {
+                @ini_set( 'default_socket_timeout', (string) $prev_socket_timeout );
+            }
         }
     }
 
-    private function build_client(): \SoapClient {
+    private function build_client( ?int $timeout_override = null ): \SoapClient {
         if ( empty( $this->username ) || empty( $this->password ) ) {
             throw new \RuntimeException( 'Credentials not set.' );
         }
-        
+
+        $timeout = ( null !== $timeout_override ) ? $timeout_override : $this->timeout;
+
         $options = [
             'trace'              => $this->debug ? 1 : 0,
             'exceptions'         => true,
             'cache_wsdl'         => WSDL_CACHE_MEMORY,
             'login'              => $this->username,
             'password'           => $this->password,
-            'connection_timeout' => $this->timeout,
+            'connection_timeout' => $timeout,
             'soap_version'       => ( $this->soap_version === 12 ) ? SOAP_1_2 : SOAP_1_1,
             'stream_context'     => stream_context_create( [
                 'http' => [
-                    'timeout' => $this->timeout,
+                    'timeout' => $timeout,
                 ],
             ] ),
         ];
-        
+
         if ( $this->force_location ) {
             $options['location'] = $this->force_location;
         }
-        
+
         if ( $this->debug ) {
             Logger::instance()->log( 'SOAP client built', [
                 'wsdl'         => $this->wsdl,
                 'location'     => $options['location'] ?? '(from WSDL)',
-                'timeout'      => $this->timeout,
+                'timeout'      => $timeout,
                 'soap_version' => $this->soap_version,
             ] );
         }
-        
+
         return new \SoapClient( $this->wsdl, $options );
     }
 
