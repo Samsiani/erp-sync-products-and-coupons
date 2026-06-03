@@ -670,6 +670,43 @@
         });
     }
 
+    // Refresh discount-card cache (background) from the settings page
+    function initRefreshCardsCache() {
+        $(document).on('click', '#erp-sync-refresh-cards-btn', function(e) {
+            e.preventDefault();
+
+            const $button = $(this);
+            const $status = $('.erp-sync-refresh-cards-status');
+            const originalText = $button.text();
+
+            $button.prop('disabled', true).text('Starting…');
+            $status.text('');
+
+            $.ajax({
+                url: erpSyncAdmin.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'erp_sync_refresh_cards_now',
+                    nonce: erpSyncAdmin.nonce
+                },
+                success: function(response) {
+                    const msg = (response && response.data && response.data.message)
+                        ? response.data.message
+                        : 'Started.';
+                    $status.css('color', response && response.success ? '#1d7b34' : '#b32d2e').text(msg);
+                },
+                error: function(xhr, status, error) {
+                    $status.css('color', '#b32d2e').text('Error: ' + error);
+                },
+                complete: function() {
+                    setTimeout(function() {
+                        $button.prop('disabled', false).text(originalText);
+                    }, 1500);
+                }
+            });
+        });
+    }
+
     // Initialize on document ready
     $(document).ready(function() {
         initTabs();
@@ -680,7 +717,8 @@
         initSingleProductUpdate();
         initSingleCouponUpdate();
         initCsvImport();
-        
+        initRefreshCardsCache();
+
         console.log('ERP Sync Admin JS v1.5.0 loaded');
     });
 

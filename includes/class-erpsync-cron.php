@@ -74,6 +74,10 @@ class Cron {
             'interval' => HOUR_IN_SECONDS,
             'display'  => __( 'Hourly (ERP Sync)', 'erp-sync' ),
         ];
+        $schedules['erp_sync_6h'] = [
+            'interval' => 6 * HOUR_IN_SECONDS,
+            'display'  => __( 'Every 6 hours (ERP Sync)', 'erp-sync' ),
+        ];
         $schedules['erp_sync_twicedaily'] = [
             'interval' => 12 * HOUR_IN_SECONDS,
             'display'  => __( 'Twice Daily (ERP Sync)', 'erp-sync' ),
@@ -97,18 +101,32 @@ class Cron {
         return (bool) get_option( self::OPTION_STOCK_CRON_ENABLED, false );
     }
 
+    /**
+     * Valid intervals for the coupon (discount-card) sync.
+     *
+     * The coupon sync now pulls the COMPLETE 1C card list (~6 min) into the local
+     * cache and pushes only changed cards to WooCommerce. That is far too heavy to
+     * run on a sub-hour schedule, so only 1h / 6h / 12h / 24h are allowed. Legacy
+     * 5/10/15-min values are migrated up to 6h automatically.
+     */
+    const COUPON_INTERVALS = [ 'erp_sync_hourly', 'erp_sync_6h', 'erp_sync_twicedaily', 'erp_sync_daily' ];
+
     public static function get_interval_key(): string {
-        $key = (string) get_option( self::OPTION_CRON_INTERVAL, 'erp_sync_10min' );
-        
+        $key = (string) get_option( self::OPTION_CRON_INTERVAL, 'erp_sync_6h' );
+
         // Support migration from old WDCS interval keys (one-time check)
-        if ( strpos( $key, 'wdcs_' ) === 0 && ! get_option( 'erp_sync_cron_interval_migrated' ) ) {
+        if ( strpos( $key, 'wdcs_' ) === 0 ) {
             $key = str_replace( 'wdcs_', 'erp_sync_', $key );
-            update_option( self::OPTION_CRON_INTERVAL, $key );
-            update_option( 'erp_sync_cron_interval_migrated', true );
         }
-        
-        if ( ! in_array( $key, [ 'erp_sync_5min','erp_sync_10min','erp_sync_15min' ], true ) ) {
-            $key = 'erp_sync_10min';
+
+        // Legacy sub-hour intervals are unsafe for the full-card sync — bump to 6h.
+        if ( in_array( $key, [ 'erp_sync_5min', 'erp_sync_10min', 'erp_sync_15min', 'erp_sync_30min' ], true ) ) {
+            $key = 'erp_sync_6h';
+            update_option( self::OPTION_CRON_INTERVAL, $key );
+        }
+
+        if ( ! in_array( $key, self::COUPON_INTERVALS, true ) ) {
+            $key = 'erp_sync_6h';
         }
         return $key;
     }
@@ -213,48 +231,77 @@ class Cron {
     }
 
     /**
-     * Run coupon sync (existing functionality)
+     * Run the coupon (discount-card) sync.
+     *
+     * Refreshes the local card cache from 1C and pushes only NEW/CHANGED cards
+     * into WooCommerce coupons (see Cards_Cache::refresh). This replaces the old
+     * "fetch all cards + rewrite every coupon on every run" behaviour, which
+     * pulled ~15 MB / 38k rows over a ~6-minute SOAP call every cycle and tied up
+     * a PHP worker — unsafe on a short schedule.
+     *
+     * Intended to run from system cron / WP-CLI, never a web request.
      */
     public static function run(): void {
         if ( get_transient( self::LOCK_TRANSIENT ) ) {
             Logger::instance()->log( 'ERP Sync coupon cron skipped (locked)', [] );
             return;
         }
-        set_transient( self::LOCK_TRANSIENT, 1, 10 * MINUTE_IN_SECONDS );
+        set_transient( self::LOCK_TRANSIENT, 1, 30 * MINUTE_IN_SECONDS );
 
-        $start = microtime(true);
-        $result = [ 'time' => current_time('mysql'), 'success' => false, 'created' => 0, 'updated' => 0, 'remote' => 0, 'error' => '' ];
+        $start  = microtime( true );
+        $result = [ 'time' => current_time( 'mysql' ), 'success' => false, 'created' => 0, 'updated' => 0, 'remote' => 0, 'error' => '' ];
 
         Logger::instance()->log( 'ERP Sync coupon cron run start', [
-            'php_mem_usage_kb' => (int) ( memory_get_usage(true) / 1024 ),
-            'php_mem_peak_kb'  => (int) ( memory_get_peak_usage(true) / 1024 ),
+            'php_mem_usage_kb' => (int) ( memory_get_usage( true ) / 1024 ),
+            'php_mem_peak_kb'  => (int) ( memory_get_peak_usage( true ) / 1024 ),
             'interval'         => self::get_interval_key(),
+            'mode'             => 'card-cache',
         ] );
 
         try {
-            $svc = new Sync_Service( new API_Client() );
-            $res = $svc->full_sync();
-            $result['success'] = true;
-            $result['created'] = (int) ( $res['created'] ?? 0 );
-            $result['updated'] = (int) ( $res['updated'] ?? 0 );
-            $result['remote']  = (int) ( $res['total_remote'] ?? 0 );
+            $stats = Cards_Cache::refresh( true );
+
+            if ( ! empty( $stats['skipped'] ) ) {
+                // A refresh was already running (manual trigger / overlap) — not an error.
+                Logger::instance()->log( 'ERP Sync coupon cron: cache refresh already running, skipped', [] );
+                delete_transient( self::LOCK_TRANSIENT );
+                return;
+            }
+
+            $result['success']   = ! empty( $stats['success'] );
+            $result['created']   = (int) ( $stats['wc_created'] ?? 0 );
+            $result['updated']   = (int) ( $stats['wc_updated'] ?? 0 );
+            $result['remote']    = (int) ( $stats['fetched'] ?? 0 );
+            $result['new']       = (int) ( $stats['new'] ?? 0 );
+            $result['changed']   = (int) ( $stats['changed'] ?? 0 );
+            $result['unchanged'] = (int) ( $stats['unchanged'] ?? 0 );
+            $result['removed']   = (int) ( $stats['removed'] ?? 0 );
+            $result['wc_errors'] = (int) ( $stats['wc_errors'] ?? 0 );
+            if ( ! empty( $stats['error'] ) ) {
+                $result['error'] = (string) $stats['error'];
+            }
         } catch ( \Throwable $e ) {
             $result['error'] = $e->getMessage();
             Logger::instance()->log( 'ERP Sync coupon cron import failed', [ 'error' => $e->getMessage() ] );
         } finally {
-            $duration_ms = (int) round( ( microtime(true) - $start ) * 1000 );
+            $duration_ms           = (int) round( ( microtime( true ) - $start ) * 1000 );
             $result['duration_ms'] = $duration_ms;
-            $result['mem_peak_kb'] = (int) ( memory_get_peak_usage(true) / 1024 );
+            $result['mem_peak_kb'] = (int) ( memory_get_peak_usage( true ) / 1024 );
             update_option( self::OPTION_CRON_LAST_RESULT, $result );
 
             Logger::instance()->log( 'ERP Sync coupon cron run end', [
-                'success'        => $result['success'] ? 1 : 0,
-                'created'        => $result['created'],
-                'updated'        => $result['updated'],
-                'remote'         => $result['remote'],
-                'error'          => $result['error'],
-                'duration_ms'    => $duration_ms,
-                'mem_peak_kb'    => $result['mem_peak_kb'],
+                'success'     => $result['success'] ? 1 : 0,
+                'remote'      => $result['remote'],
+                'new'         => $result['new'] ?? 0,
+                'changed'     => $result['changed'] ?? 0,
+                'unchanged'   => $result['unchanged'] ?? 0,
+                'removed'     => $result['removed'] ?? 0,
+                'wc_created'  => $result['created'],
+                'wc_updated'  => $result['updated'],
+                'wc_errors'   => $result['wc_errors'] ?? 0,
+                'error'       => $result['error'],
+                'duration_ms' => $duration_ms,
+                'mem_peak_kb' => $result['mem_peak_kb'],
             ] );
 
             delete_transient( self::LOCK_TRANSIENT );

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ERP Sync Products and Coupons
  * Description: Synchronize products (catalog, stock, prices) and discount cards (coupons) from 1C/IBS SOAP WebExchange service into WooCommerce.
- * Version: 1.4.11
+ * Version: 1.4.12
  * Author: ERPSync
  * Text Domain: erp-sync
  * Requires at least: 5.8
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Constants
  */
-define( 'ERPSYNC_VERSION', '1.4.11' );
+define( 'ERPSYNC_VERSION', '1.4.12' );
 define( 'ERPSYNC_FILE', __FILE__ );
 define( 'ERPSYNC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ERPSYNC_URL', plugin_dir_url( __FILE__ ) );
@@ -186,6 +186,7 @@ require_once ERPSYNC_DIR . 'includes/class-erpsync-logger.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-security.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-api-client.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-audit-logger.php';
+require_once ERPSYNC_DIR . 'includes/class-erpsync-cards-cache.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-product-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-sync-service.php';
 require_once ERPSYNC_DIR . 'includes/class-erpsync-webhook.php';
@@ -263,6 +264,40 @@ function erp_sync_bootstrap(): void {
 add_action( 'plugins_loaded', 'erp_sync_bootstrap', 20 );
 
 /**
+ * Version-gated upgrade routine.
+ *
+ * register_activation_hook does NOT fire on auto-updates (PUC / GitHub releases),
+ * so anything that must happen on version change goes here: create the card-cache
+ * table and migrate the coupon-sync schedule off unsafe sub-hour intervals.
+ * Idempotent and cheap — gated by a stored version option.
+ */
+function erp_sync_maybe_upgrade(): void {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return;
+    }
+    $stored = (string) get_option( 'erp_sync_db_version', '' );
+    if ( $stored === ERPSYNC_VERSION ) {
+        return;
+    }
+
+    if ( class_exists( '\ERPSync\Cards_Cache' ) ) {
+        \ERPSync\Cards_Cache::create_table();
+    }
+    if ( class_exists( '\ERPSync\Cron' ) ) {
+        // Migrates any 5/10/15/30-min value up to 6h, then (re)schedules at the safe interval.
+        \ERPSync\Cron::get_interval_key();
+        \ERPSync\Cron::reschedule_after_settings_change();
+    }
+
+    update_option( 'erp_sync_db_version', ERPSYNC_VERSION );
+
+    if ( class_exists( '\ERPSync\Logger' ) ) {
+        \ERPSync\Logger::instance()->log( 'ERP Sync upgraded', [ 'from' => $stored, 'to' => ERPSYNC_VERSION ] );
+    }
+}
+add_action( 'plugins_loaded', 'erp_sync_maybe_upgrade', 25 );
+
+/**
  * Activation/Deactivation
  */
 function erp_sync_activate(): void {
@@ -275,7 +310,12 @@ function erp_sync_activate(): void {
     if ( class_exists( '\ERPSync\Security' ) ) {
         \ERPSync\Security::create_tables();
     }
-    
+
+    // Create the discount-card cache table (mirror of 1C InformationCards).
+    if ( class_exists( '\ERPSync\Cards_Cache' ) ) {
+        \ERPSync\Cards_Cache::create_table();
+    }
+
     // Create product logs table
     erp_sync_create_log_table();
 }
@@ -363,3 +403,37 @@ function erp_sync_enqueue_admin_assets( string $hook ): void {
     ] );
 }
 add_action( 'admin_enqueue_scripts', 'erp_sync_enqueue_admin_assets' );
+
+/**
+ * WP-CLI: refresh the 1C discount-card cache (and update changed coupons).
+ *
+ * Usage:
+ *   wp erp-sync refresh-cards               # refresh cache + push new/changed coupons
+ *   wp erp-sync refresh-cards --no-coupons  # only rebuild the cache, do not touch WC coupons
+ *
+ * Runs entirely in CLI (off the web path) — this is the safe place for the
+ * ~6-minute full InformationCards fetch.
+ */
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+    \WP_CLI::add_command( 'erp-sync refresh-cards', function ( $args, $assoc_args ) {
+        if ( ! class_exists( '\ERPSync\Cards_Cache' ) ) {
+            \WP_CLI::error( 'ERP Sync not loaded (is WooCommerce active?).' );
+        }
+        $write = empty( $assoc_args['no-coupons'] );
+        \WP_CLI::log( 'Refreshing 1C discount-card cache' . ( $write ? ' and updating changed coupons' : ' (cache only)' ) . ' …' );
+
+        $stats = \ERPSync\Cards_Cache::refresh( $write );
+
+        if ( ! empty( $stats['success'] ) ) {
+            \WP_CLI::success( sprintf(
+                'fetched=%d new=%d changed=%d unchanged=%d removed=%d wc_created=%d wc_updated=%d wc_errors=%d (fetch %ds, total %ds, peak %dMB)',
+                (int) $stats['fetched'], (int) $stats['new'], (int) $stats['changed'], (int) $stats['unchanged'],
+                (int) $stats['removed'], (int) $stats['wc_created'], (int) $stats['wc_updated'], (int) $stats['wc_errors'],
+                (int) round( ( $stats['fetch_ms'] ?? 0 ) / 1000 ), (int) round( ( $stats['duration_ms'] ?? 0 ) / 1000 ),
+                (int) round( ( $stats['mem_peak_kb'] ?? 0 ) / 1024 )
+            ) );
+        } else {
+            \WP_CLI::error( ! empty( $stats['error'] ) ? $stats['error'] : 'refresh failed' );
+        }
+    } );
+}

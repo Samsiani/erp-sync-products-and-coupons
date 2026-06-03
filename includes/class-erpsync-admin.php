@@ -50,6 +50,7 @@ class Admin {
         add_action( 'wp_ajax_erp_sync_catalog', [ __CLASS__, 'ajax_sync_catalog' ] );
         add_action( 'wp_ajax_erp_sync_coupons', [ __CLASS__, 'ajax_sync_coupons' ] );
         add_action( 'wp_ajax_erp_sync_single_coupon_update', [ __CLASS__, 'ajax_single_coupon_update' ] );
+        add_action( 'wp_ajax_erp_sync_refresh_cards_now', [ __CLASS__, 'ajax_refresh_cards_now' ] );
         add_action( 'wp_ajax_erp_sync_coupons_csv_import', [ __CLASS__, 'ajax_csv_import_coupons' ] );
         add_action( 'wp_ajax_erp_sync_cardholder_csv_import', [ __CLASS__, 'ajax_cardholder_csv_import' ] );
 
@@ -233,11 +234,11 @@ class Admin {
         $cat_ids = array_values( array_unique( array_filter( array_map( 'intval', $cat_ids ) ) ) );
         update_option( ERP_SYNC_OPTION_EXCLUDED_CAT_IDS, $cat_ids );
 
-        // Coupons Cron Settings
+        // Coupons Cron Settings (card-cache sync: 1h / 6h / 12h / 24h)
         $cron_enabled  = isset( $_POST['cron_enabled'] ) ? 1 : 0;
-        $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_10min' );
-        if ( ! in_array( $cron_interval, [ 'erp_sync_5min','erp_sync_10min','erp_sync_15min' ], true ) ) {
-            $cron_interval = 'erp_sync_10min';
+        $cron_interval = (string) ( $_POST['cron_interval'] ?? 'erp_sync_6h' );
+        if ( ! in_array( $cron_interval, Cron::COUPON_INTERVALS, true ) ) {
+            $cron_interval = 'erp_sync_6h';
         }
         update_option( Cron::OPTION_CRON_ENABLED, $cron_enabled );
         update_option( Cron::OPTION_CRON_INTERVAL, $cron_interval );
@@ -773,11 +774,43 @@ class Admin {
             if ( $result ) {
                 wp_send_json_success( [ 'message' => __( 'Coupon synced successfully', 'erp-sync' ) ] );
             } else {
-                wp_send_json_error( [ 'message' => __( 'Coupon not found in ERP', 'erp-sync' ) ] );
+                wp_send_json_error( [ 'message' => __( 'This code is not in the 1C discount-card list (cache). Nothing to update.', 'erp-sync' ) ] );
             }
         } catch ( \Throwable $e ) {
             wp_send_json_error( [ 'message' => $e->getMessage() ] );
         }
+    }
+
+    /**
+     * AJAX: schedule an immediate background refresh of the discount-card cache.
+     *
+     * Does NOT run the ~6-minute fetch inline (that would hang the admin request).
+     * It schedules the coupon-sync cron hook to run now; the server cron / WP-Cron
+     * runner picks it up within a few minutes and runs it in CLI, off the web path.
+     */
+    public static function ajax_refresh_cards_now(): void {
+        check_ajax_referer( 'erp_sync_ajax', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied', 'erp-sync' ) ] );
+        }
+
+        if ( \ERPSync\Cards_Cache::is_refreshing() ) {
+            wp_send_json_success( [ 'message' => __( 'A cache refresh is already running. Check back in a few minutes.', 'erp-sync' ) ] );
+        }
+
+        // Queue the coupon-sync hook to fire as soon as cron next runs, then nudge
+        // WP-Cron so it starts promptly (system cron / WP-Cron runs it off-web).
+        wp_schedule_single_event( time(), Cron::HOOK_EVENT );
+        spawn_cron();
+
+        Logger::instance()->log( 'Cards cache manual refresh requested', [
+            'user' => wp_get_current_user()->user_login ?? 'system',
+        ] );
+
+        wp_send_json_success( [
+            'message' => __( 'Cache refresh started in the background. It pulls all cards from 1C (~6 minutes) and updates changed coupons. Reload this page in a few minutes to see the result.', 'erp-sync' ),
+        ] );
     }
 
     /**
@@ -1066,7 +1099,7 @@ class Admin {
 
         // Cron (Coupons)
         $cron_enabled   = (bool) get_option( Cron::OPTION_CRON_ENABLED, false );
-        $cron_interval  = (string) get_option( Cron::OPTION_CRON_INTERVAL, 'erp_sync_10min' );
+        $cron_interval  = class_exists('\ERPSync\Cron') ? Cron::get_interval_key() : 'erp_sync_6h';
         $cron_next      = class_exists('\ERPSync\Cron') ? Cron::next_run_human() : '—';
         $cron_last_res  = get_option( Cron::OPTION_CRON_LAST_RESULT, [] );
 
@@ -1422,39 +1455,68 @@ class Admin {
                         </tr>
                     </table>
 
-                    <h2><?php _e( 'Coupons Automation', 'erp-sync' ); ?></h2>
+                    <h2><?php _e( 'Coupons Automation (Discount Cards)', 'erp-sync' ); ?></h2>
+                    <p class="description">
+                        <?php _e( 'Keeps every 1C discount card in sync with a WooCommerce coupon. Each run pulls the full card list from 1C into a local cache (~6 minutes) and updates only the cards that changed, so all coupons stay current without rewriting everything each time. The single "Sync" button on the Coupons list reads this cache instantly.', 'erp-sync' ); ?>
+                    </p>
                     <table class="form-table">
                         <tr>
-                            <th><label for="cron_enabled"><?php _e('Enable Scheduled Import','erp-sync'); ?></label></th>
+                            <th><label for="cron_enabled"><?php _e('Enable Auto Sync','erp-sync'); ?></label></th>
                             <td>
-                                <label><input type="checkbox" id="cron_enabled" name="cron_enabled" value="1" <?php checked( $cron_enabled ); ?>> <?php _e('Run Import New automatically.', 'erp-sync'); ?></label>
+                                <label><input type="checkbox" id="cron_enabled" name="cron_enabled" value="1" <?php checked( $cron_enabled ); ?>> <?php _e('Automatically refresh the card cache and update changed coupons.', 'erp-sync'); ?></label>
                             </td>
                         </tr>
                         <tr>
-                            <th><label for="cron_interval"><?php _e('Import Frequency','erp-sync'); ?></label></th>
+                            <th><label for="cron_interval"><?php _e('Sync Frequency','erp-sync'); ?></label></th>
                             <td>
                                 <select id="cron_interval" name="cron_interval">
-                                    <option value="erp_sync_5min"  <?php selected( $cron_interval, 'erp_sync_5min'  ); ?>><?php _e('Every 5 minutes','erp-sync'); ?></option>
-                                    <option value="erp_sync_10min" <?php selected( $cron_interval, 'erp_sync_10min' ); ?>><?php _e('Every 10 minutes','erp-sync'); ?></option>
-                                    <option value="erp_sync_15min" <?php selected( $cron_interval, 'erp_sync_15min' ); ?>><?php _e('Every 15 minutes','erp-sync'); ?></option>
+                                    <option value="erp_sync_hourly"     <?php selected( $cron_interval, 'erp_sync_hourly'     ); ?>><?php _e('Every 1 hour','erp-sync'); ?></option>
+                                    <option value="erp_sync_6h"         <?php selected( $cron_interval, 'erp_sync_6h'         ); ?>><?php _e('Every 6 hours','erp-sync'); ?></option>
+                                    <option value="erp_sync_twicedaily" <?php selected( $cron_interval, 'erp_sync_twicedaily' ); ?>><?php _e('Every 12 hours','erp-sync'); ?></option>
+                                    <option value="erp_sync_daily"      <?php selected( $cron_interval, 'erp_sync_daily'      ); ?>><?php _e('Every 24 hours','erp-sync'); ?></option>
                                 </select>
                                 <p class="description">
                                     <?php printf( __('Next run: %s', 'erp-sync' ), '<strong>' . esc_html( $cron_next ) . '</strong>' ); ?>
                                     <?php
                                     if ( is_array( $cron_last_res ) && ! empty( $cron_last_res ) ) {
                                         echo '<br>'.esc_html( sprintf(
-                                            __('Last run: %s, success=%s, created=%d, remote=%d, duration=%sms', 'erp-sync'),
+                                            __('Last run: %s, success=%s, fetched=%d, new=%d, changed=%d, updated=%d, created=%d, duration=%ss', 'erp-sync'),
                                             $cron_last_res['time'] ?? '—',
                                             ! empty( $cron_last_res['success'] ) ? 'yes' : 'no',
-                                            (int) ( $cron_last_res['created'] ?? 0 ),
                                             (int) ( $cron_last_res['remote'] ?? 0 ),
-                                            (int) ( $cron_last_res['duration_ms'] ?? 0 )
+                                            (int) ( $cron_last_res['new'] ?? 0 ),
+                                            (int) ( $cron_last_res['changed'] ?? 0 ),
+                                            (int) ( $cron_last_res['updated'] ?? 0 ),
+                                            (int) ( $cron_last_res['created'] ?? 0 ),
+                                            (int) round( ( (int) ( $cron_last_res['duration_ms'] ?? 0 ) ) / 1000 )
                                         ) );
                                         if ( ! empty( $cron_last_res['error'] ) ) {
                                             echo '<br><span class="erp-sync-error">'.esc_html( sprintf( __('Error: %s','erp-sync' ), $cron_last_res['error'] ) ).'</span>';
                                         }
                                     }
                                     ?>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><?php _e('Card Cache','erp-sync'); ?></th>
+                            <td>
+                                <?php $erp_cache_count = \ERPSync\Cards_Cache::count(); $erp_cache_last = \ERPSync\Cards_Cache::last_result(); ?>
+                                <p>
+                                    <strong><?php echo esc_html( number_format_i18n( $erp_cache_count ) ); ?></strong>
+                                    <?php _e('discount cards cached.', 'erp-sync'); ?>
+                                    <?php
+                                    if ( is_array( $erp_cache_last ) && ! empty( $erp_cache_last['time'] ) ) {
+                                        echo ' ' . esc_html( sprintf( __('Last refresh: %s.', 'erp-sync'), $erp_cache_last['time'] ) );
+                                    }
+                                    ?>
+                                </p>
+                                <p>
+                                    <button type="button" class="button" id="erp-sync-refresh-cards-btn"><?php _e('Refresh cards cache now', 'erp-sync'); ?></button>
+                                    <span class="erp-sync-refresh-cards-status" style="margin-left:8px;"></span>
+                                </p>
+                                <p class="description">
+                                    <?php _e('Pulls the complete card list from 1C in the background (~6 minutes) and updates any changed coupons. New cards added in 1C are picked up automatically. Runs off the website request, so it never slows the store.', 'erp-sync'); ?>
                                 </p>
                             </td>
                         </tr>

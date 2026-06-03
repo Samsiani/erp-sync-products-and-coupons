@@ -2508,45 +2508,43 @@ class Sync_Service {
             'coupon_id'         => $coupon_id,
             'coupon_code_raw'   => $coupon_code_raw,
             'coupon_code'       => $coupon_code,
+            'source'            => 'cache',
             'user'              => wp_get_current_user()->user_login ?? 'system',
         ] );
 
         try {
-            // Fetch all cards from API and find the matching one
-            $cards = $this->api->fetch_cards_remote();
+            // Read the single card from the local cache (instant) instead of
+            // fetching all ~38k cards over a ~6-minute SOAP call. The cache is
+            // kept current by the scheduled background refresh (Cards_Cache).
+            $card = Cards_Cache::get_card( $coupon_code );
 
-            // Log diagnostic info before searching
-            Logger::instance()->log( 'Searching for coupon in API cards', [
-                'normalized_code' => $coupon_code,
-                'cards_count'     => count( $cards ),
-            ] );
+            if ( null !== $card ) {
+                $this->create_or_update_coupon( $card, true, true );
 
-            foreach ( $cards as $card ) {
-                if ( empty( $card['CardCode'] ) ) {
-                    continue;
-                }
+                Logger::instance()->log( 'Single coupon sync completed', [
+                    'coupon_id'   => $coupon_id,
+                    'coupon_code' => $coupon_code,
+                    'source'      => 'cache',
+                    'user'        => wp_get_current_user()->user_login ?? 'system',
+                ] );
 
-                // Normalize the API card code the same way
-                $card_code_normalized = erp_sync_format_code( trim( $card['CardCode'] ) );
-
-                if ( strtolower( $card_code_normalized ) === strtolower( $coupon_code ) ) {
-                    $this->create_or_update_coupon( $card, true, true );
-
-                    Logger::instance()->log( 'Single coupon sync completed', [
-                        'coupon_id'   => $coupon_id,
-                        'coupon_code' => $coupon_code,
-                        'user'        => wp_get_current_user()->user_login ?? 'system',
-                    ] );
-
-                    return true;
-                }
+                return true;
             }
 
-            Logger::instance()->log( 'Single coupon sync: card not found in ERP', [
+            // Not in the cache. Either the code does not exist in 1C, or the
+            // cache has never been populated yet. Surface a clear, actionable
+            // message rather than a silent "not found".
+            $cache_total = Cards_Cache::count();
+            Logger::instance()->log( 'Single coupon sync: card not found in cache', [
                 'coupon_id'   => $coupon_id,
                 'coupon_code' => $coupon_code,
+                'cache_total' => $cache_total,
                 'user'        => wp_get_current_user()->user_login ?? 'system',
             ] );
+
+            if ( 0 === $cache_total ) {
+                throw new \Exception( __( 'Discount-card cache is empty. Open ERP Sync → Settings and click "Refresh cards cache now", then try again.', 'erp-sync' ) );
+            }
 
             return false;
 
