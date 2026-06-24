@@ -210,8 +210,11 @@ class Cron {
     }
 
     public static function clear_schedule(): void {
-        $ts = wp_next_scheduled( self::HOOK_EVENT );
-        if ( $ts ) {
+        // wp_next_scheduled() only returns the SOONEST timestamp, so a single
+        // unschedule can leave duplicate events behind (how the coupon cron ended
+        // up scheduled twice). Loop until every instance of the hook is gone.
+        $guard = 0;
+        while ( ( $ts = wp_next_scheduled( self::HOOK_EVENT ) ) && $guard++ < 50 ) {
             wp_unschedule_event( $ts, self::HOOK_EVENT );
         }
     }
@@ -242,8 +245,13 @@ class Cron {
      * Intended to run from system cron / WP-CLI, never a web request.
      */
     public static function run(): void {
-        if ( get_transient( self::LOCK_TRANSIENT ) ) {
-            Logger::instance()->log( 'ERP Sync coupon cron skipped (locked)', [] );
+        // The object-cache transient is NOT reliably shared across CLI/cron/web
+        // processes (LiteSpeed), so also check the real cross-process MySQL lock
+        // held by Cards_Cache::refresh() — this prevents a duplicate/overlapping
+        // run (e.g. a manual "refresh now" landing on top of the recurring cron)
+        // from logging a redundant start and racing the heavy fetch.
+        if ( \ERPSync\Cards_Cache::is_refreshing() || get_transient( self::LOCK_TRANSIENT ) ) {
+            Logger::instance()->log( 'ERP Sync coupon cron skipped (refresh already running)', [] );
             return;
         }
         set_transient( self::LOCK_TRANSIENT, 1, 30 * MINUTE_IN_SECONDS );
@@ -277,6 +285,14 @@ class Cron {
             $result['unchanged'] = (int) ( $stats['unchanged'] ?? 0 );
             $result['removed']   = (int) ( $stats['removed'] ?? 0 );
             $result['wc_errors'] = (int) ( $stats['wc_errors'] ?? 0 );
+            $result['fetch_complete'] = (int) ( $stats['fetch_complete'] ?? 1 );
+            $result['fetch_attempts'] = (int) ( $stats['fetch_attempts'] ?? 1 );
+            if ( ! empty( $stats['skipped_prune'] ) ) {
+                $result['skipped_prune'] = (string) $stats['skipped_prune'];
+            }
+            if ( ! empty( $stats['prune_forced'] ) ) {
+                $result['prune_forced'] = (string) $stats['prune_forced'];
+            }
             if ( ! empty( $stats['error'] ) ) {
                 $result['error'] = (string) $stats['error'];
             }

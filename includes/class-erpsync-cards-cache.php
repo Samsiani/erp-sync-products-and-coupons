@@ -31,6 +31,24 @@ class Cards_Cache {
     const LOCK_TRANSIENT = 'erp_sync_cards_refresh_lock';
     const OPTION_LAST    = 'erp_sync_cards_cache_last_result';
 
+    /**
+     * Truncation defence — the 1C `InformationCards` SOAP op takes NO parameters
+     * (WSDL: <xs:sequence/>), cannot paginate, and intermittently returns a
+     * well-formed BUT INCOMPLETE set (e.g. ~19k of ~38k rows: its server-side
+     * iteration aborts partway). A short response must NEVER be trusted to prune
+     * the cache. We keep a rolling baseline of recent good fetch sizes, RETRY the
+     * fetch when it looks truncated, and only prune when the feed is plausibly
+     * complete (or a smaller feed has persisted across several runs = real shrink).
+     */
+    const OPTION_FETCH_BASELINE = 'erp_sync_cards_fetch_baseline'; // rolling last-N good fetch sizes
+    const FETCH_BASELINE_WINDOW = 5;
+    const FETCH_MIN_RATIO       = 0.85;  // fetch < ratio * expected ⇒ suspected truncation
+    const FETCH_MAX_ATTEMPTS    = 3;     // full re-fetches within one refresh when truncated
+    const FETCH_RETRY_BACKOFF   = 30;    // seconds to wait between retries (let 1C recover, avoid hammering)
+    const OPTION_PRUNE_MISS     = 'erp_sync_cards_prune_miss';     // consecutive sustained-small fetches
+    const PRUNE_MISS_THRESHOLD  = 3;     // runs a smaller feed must persist before we accept a real shrink
+    const OPTION_FORCE_PRUNE    = 'erp_sync_cards_force_prune_once'; // operator override: prune once regardless
+
     /** Number of cache rows written per bulk INSERT. */
     const UPSERT_CHUNK = 500;
 
@@ -80,6 +98,41 @@ class Cards_Cache {
     public static function count(): int {
         global $wpdb;
         return (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . self::table_name() );
+    }
+
+    /**
+     * Median of the last N good (non-truncated) fetch sizes, used to recognise a
+     * truncated 1C response. 0 when no baseline has been recorded yet.
+     */
+    private static function expected_fetch_size(): int {
+        $b = array_values( array_filter(
+            array_map( 'intval', (array) get_option( self::OPTION_FETCH_BASELINE, [] ) ),
+            static function ( $v ) { return $v > 0; }
+        ) );
+        if ( empty( $b ) ) {
+            return 0;
+        }
+        sort( $b );
+        return (int) $b[ (int) floor( count( $b ) / 2 ) ];
+    }
+
+    /**
+     * Append a fetch size to the rolling baseline window. Call ONLY for fetches
+     * that passed the completeness check, so a truncated fetch never lowers the bar.
+     */
+    private static function record_fetch_baseline( int $size ): void {
+        if ( $size <= 0 ) {
+            return;
+        }
+        $b = array_values( array_filter(
+            array_map( 'intval', (array) get_option( self::OPTION_FETCH_BASELINE, [] ) ),
+            static function ( $v ) { return $v > 0; }
+        ) );
+        $b[] = $size;
+        if ( count( $b ) > self::FETCH_BASELINE_WINDOW ) {
+            $b = array_slice( $b, -self::FETCH_BASELINE_WINDOW );
+        }
+        update_option( self::OPTION_FETCH_BASELINE, $b );
     }
 
     /**
@@ -230,10 +283,46 @@ class Cards_Cache {
         try {
             $api = new API_Client();
 
-            $fetch_start    = microtime( true );
-            $cards          = $api->fetch_cards_remote();
-            $stats['fetch_ms'] = (int) round( ( microtime( true ) - $fetch_start ) * 1000 );
-            $stats['fetched']  = count( $cards );
+            // Expected feed size = the larger of (a) the rolling median of recent
+            // good fetches and (b) the rows already in the cache. Using the current
+            // cache count as a floor means even with no baseline yet, a fetch that
+            // returns far fewer rows than we already hold is recognised as truncated.
+            $expected = max( self::expected_fetch_size(), self::count() );
+
+            $fetch_start = microtime( true );
+            $cards       = [];
+            $complete    = true; // until proven truncated against a known baseline
+            $attempt     = 0;
+            for ( $attempt = 1; $attempt <= self::FETCH_MAX_ATTEMPTS; $attempt++ ) {
+                $try = $api->fetch_cards_remote();
+                if ( count( $try ) > count( $cards ) ) {
+                    $cards = $try; // keep the largest attempt
+                }
+                $min_ok = ( $expected <= 0 ) ? 0 : (int) floor( $expected * self::FETCH_MIN_RATIO );
+                if ( count( $cards ) >= $min_ok ) {
+                    $complete = true;
+                    break; // plausibly complete (or no baseline to judge against) — accept
+                }
+                // Looks truncated. 1C usually returns the full list on a later try.
+                $complete = false;
+                Logger::instance()->log( 'Cards fetch looks truncated — retrying', [
+                    'attempt'  => $attempt,
+                    'got'      => count( $try ),
+                    'best'     => count( $cards ),
+                    'expected' => $expected,
+                    'min_ok'   => $min_ok,
+                ] );
+                // Gentle backoff between retries so we never hammer 1C back-to-back
+                // (this whole loop only ever runs in CLI/cron, off the web path).
+                if ( $attempt < self::FETCH_MAX_ATTEMPTS && self::FETCH_RETRY_BACKOFF > 0 ) {
+                    sleep( self::FETCH_RETRY_BACKOFF );
+                }
+            }
+            $stats['fetch_ms']       = (int) round( ( microtime( true ) - $fetch_start ) * 1000 );
+            $stats['fetched']        = count( $cards );
+            $stats['expected']       = $expected;
+            $stats['fetch_complete'] = $complete ? 1 : 0;
+            $stats['fetch_attempts'] = min( $attempt, self::FETCH_MAX_ATTEMPTS );
 
             // Snapshot of what we already have: code_key => content_hash.
             $existing = [];
@@ -293,8 +382,52 @@ class Cards_Cache {
             unset( $cards );
 
             // Drop cache rows that 1C no longer returns (cards truly removed).
-            // Guarded by fetched>0 so a momentary empty fetch can't wipe the cache.
+            //
+            // CRITICAL: a truncated 1C response (see fetch retry above) omits real
+            // cards that still exist — pruning on it would delete thousands of valid
+            // coupons from the mirror. So prune ONLY when the fetch looked complete,
+            // OR a smaller feed has persisted for PRUNE_MISS_THRESHOLD consecutive
+            // runs (a genuine 1C deletion, not a transient truncation). An operator
+            // can force a one-off prune via the OPTION_FORCE_PRUNE override.
+            $force_once = (bool) get_option( self::OPTION_FORCE_PRUNE, false );
+            if ( $force_once ) {
+                delete_option( self::OPTION_FORCE_PRUNE );
+            }
+
+            $prune_ok = false;
             if ( $stats['fetched'] > 0 && ! empty( $existing ) ) {
+                if ( $complete || $force_once ) {
+                    $prune_ok = true;
+                    delete_option( self::OPTION_PRUNE_MISS );
+                    if ( $force_once ) {
+                        $stats['prune_forced'] = 'manual_override';
+                    }
+                } else {
+                    $miss = (int) get_option( self::OPTION_PRUNE_MISS, 0 ) + 1;
+                    if ( $miss >= self::PRUNE_MISS_THRESHOLD ) {
+                        // Sustained smaller feed = accept as the new normal: prune AND
+                        // re-baseline so the truncation detector stops firing.
+                        $prune_ok = true;
+                        $stats['prune_forced'] = 'sustained_shrink';
+                        delete_option( self::OPTION_PRUNE_MISS );
+                        self::record_fetch_baseline( $stats['fetched'] );
+                    } else {
+                        update_option( self::OPTION_PRUNE_MISS, $miss );
+                        $stats['skipped_prune'] = sprintf(
+                            'fetch_truncated (fetched=%d, expected=%d, miss=%d/%d)',
+                            $stats['fetched'], $expected, $miss, self::PRUNE_MISS_THRESHOLD
+                        );
+                        Logger::instance()->log( 'Cards cache prune SKIPPED — suspected truncated fetch', [
+                            'fetched'  => $stats['fetched'],
+                            'expected' => $expected,
+                            'cache'    => count( $existing ),
+                            'miss'     => $miss . '/' . self::PRUNE_MISS_THRESHOLD,
+                        ] );
+                    }
+                }
+            }
+
+            if ( $prune_ok ) {
                 $stale = array_diff( array_keys( $existing ), array_keys( $seen ) );
                 if ( ! empty( $stale ) ) {
                     foreach ( array_chunk( $stale, self::UPSERT_CHUNK ) as $chunk ) {
@@ -308,6 +441,12 @@ class Cards_Cache {
                     }
                     $stats['removed'] = count( $stale );
                 }
+            }
+
+            // Record this fetch size in the rolling baseline ONLY when it looked
+            // complete — never let a truncated fetch poison the truncation detector.
+            if ( $complete && $stats['fetched'] > 0 ) {
+                self::record_fetch_baseline( $stats['fetched'] );
             }
             unset( $existing, $seen );
 
