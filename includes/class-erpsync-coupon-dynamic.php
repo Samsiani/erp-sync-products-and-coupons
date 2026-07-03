@@ -19,6 +19,9 @@ class Coupon_Dynamic {
 
     const BIRTHDAY_OVERRIDE = 20;
 
+    /** Days on EACH side of the birthday that also get the override (2 = a 5-day window). */
+    const BIRTHDAY_WINDOW_DAYS = 2;
+
     public static function init(): void {
         add_filter( 'woocommerce_coupon_get_amount', [ __CLASS__, 'filter_amount' ], 25, 2 );
         add_filter( 'woocommerce_coupon_get_description', [ __CLASS__, 'append_dynamic_info' ], 25, 2 );
@@ -60,30 +63,76 @@ class Coupon_Dynamic {
     }
 
     private static function is_in_birthday_window( string $dob ): bool {
-        if ( empty( $dob ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $dob ) ) return false;
+        $md = self::parse_birthday_month_day( $dob );
+        if ( null === $md ) return false;
+        list( $m, $d ) = $md;
+
         try {
-            list( $y, $m, $d ) = array_map( 'intval', explode( '-', $dob ) );
             $now   = current_time( 'timestamp' );
+            $today = strtotime( date( 'Y-m-d', $now ) );
+            if ( false === $today ) return false;
             $year  = (int) date( 'Y', $now );
 
-            $candidateDates = [];
-            if ( $m === 2 && $d === 29 && ! self::is_leap_year( $year ) ) {
-                $candidateDates[] = strtotime( "$year-02-28" );
-                $candidateDates[] = strtotime( "$year-03-01" );
-            } else {
-                $candidateDates[] = strtotime( sprintf('%04d-%02d-%02d', $year, $m, $d ) );
-            }
+            // Check the birthday in the previous, current AND next year so the
+            // window works across the Dec/Jan boundary (e.g. birthday Jan 1 while
+            // today is Dec 31).
+            foreach ( [ $year - 1, $year, $year + 1 ] as $y ) {
+                $candidateDates = [];
+                if ( $m === 2 && $d === 29 && ! self::is_leap_year( $y ) ) {
+                    // Non-leap year: treat a Feb 29 birthday as Feb 28 + Mar 1.
+                    $candidateDates[] = strtotime( sprintf( '%04d-02-28', $y ) );
+                    $candidateDates[] = strtotime( sprintf( '%04d-03-01', $y ) );
+                } else {
+                    $candidateDates[] = strtotime( sprintf( '%04d-%02d-%02d', $y, $m, $d ) );
+                }
 
-            $today = strtotime( date( 'Y-m-d', $now ) );
-            foreach ( $candidateDates as $c ) {
-                if ( $today === $c || $today === $c - DAY_IN_SECONDS || $today === $c + DAY_IN_SECONDS ) {
-                    return true;
+                foreach ( $candidateDates as $c ) {
+                    if ( false === $c ) continue;
+                    // Round the day gap so a fixed-offset TZ can't cause off-by-one.
+                    $days = (int) round( abs( $today - $c ) / DAY_IN_SECONDS );
+                    if ( $days <= self::BIRTHDAY_WINDOW_DAYS ) {
+                        return true;
+                    }
                 }
             }
             return false;
         } catch ( \Throwable $e ) {
             return false;
         }
+    }
+
+    /**
+     * Extract [month, day] from a stored DOB. Accepts the 1C export format
+     * "dd.MM.yyyy [H:mm:ss]" as well as "YYYY-MM-DD", "YYYYMMDD" and "dd/MM/yyyy".
+     * Only month + day matter for the birthday window, so the year is ignored.
+     *
+     * @return array{0:int,1:int}|null  [month, day] or null when unparseable.
+     */
+    private static function parse_birthday_month_day( string $dob ): ?array {
+        $dob = trim( $dob );
+        if ( '' === $dob ) return null;
+
+        // Drop any trailing time portion ("... 0:00:00" or "...T00:00:00").
+        $parts = preg_split( '/[ T]/', $dob );
+        $date  = $parts[0] ?? '';
+
+        $m = 0;
+        $d = 0;
+        if ( preg_match( '/^(\d{4})-(\d{1,2})-(\d{1,2})$/', $date, $x ) ) {            // YYYY-MM-DD
+            $m = (int) $x[2];
+            $d = (int) $x[3];
+        } elseif ( preg_match( '#^(\d{1,2})[./](\d{1,2})[./](\d{4})$#', $date, $x ) ) { // dd.MM.yyyy / dd/MM/yyyy (1C)
+            $d = (int) $x[1];
+            $m = (int) $x[2];
+        } elseif ( preg_match( '/^(\d{4})(\d{2})(\d{2})$/', $date, $x ) ) {            // YYYYMMDD
+            $m = (int) $x[2];
+            $d = (int) $x[3];
+        } else {
+            return null;
+        }
+
+        if ( $m < 1 || $m > 12 || $d < 1 || $d > 31 ) return null;
+        return [ $m, $d ];
     }
 
     private static function is_leap_year( int $y ): bool {
