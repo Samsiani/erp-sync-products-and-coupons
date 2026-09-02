@@ -664,10 +664,11 @@ class Product_Service {
      */
     public function sync_stock_batch( array $rows, string $session_id = '' ): array {
         $stats = [
-            'updated' => 0,
-            'skipped' => 0,
-            'errors'  => 0,
-            'total'   => count( $rows ),
+            'updated'   => 0,
+            'unchanged' => 0,
+            'skipped'   => 0,
+            'errors'    => 0,
+            'total'     => count( $rows ),
         ];
 
         // Collect unique branch locations for discovery
@@ -715,17 +716,38 @@ class Product_Service {
                     continue;
                 }
 
+                // Snapshot the persisted state BEFORE applying ERP values so we can tell
+                // a real change from a no-op. Most rows in an hourly run are no-ops.
+                $before = $this->snapshot_stock_state( $product );
+
                 // Update stock and price data only
                 // This method also updates _erp_sync_session_id meta
                 $this->set_product_stock_data( $product, $row, $session_id );
 
-                // Save product (persists all changes including session_id)
-                $product->save();
+                if ( $this->has_material_change( $product, $before ) ) {
+                    // Real change: full save (fires the WooCommerce/cache/WPML cascade)
+                    $product->save();
 
-                // Mirror price + stock to WPML translations (Georgian = source of truth)
-                $this->propagate_to_wpml_translations( $product );
+                    // Mirror price + stock to WPML translations (Georgian = source of truth)
+                    $this->propagate_to_wpml_translations( $product );
 
-                $stats['updated']++;
+                    $stats['updated']++;
+
+                    // Brief pause between real writes so a burst of changes is spread out
+                    // instead of pinning the CPU (20 ms default; filterable, 0 disables).
+                    $pause = (int) apply_filters( 'erp_sync_stock_save_pause_us', 20000 );
+                    if ( $pause > 0 ) {
+                        usleep( $pause );
+                    }
+                } else {
+                    // No-op: nothing a customer could see has changed. Skip the full save
+                    // (which would bump post_modified, purge the page cache, resave WPML
+                    // translations and re-run every save_post listener) and only stamp the
+                    // bookkeeping meta the orphan-cleanup query relies on.
+                    $this->persist_bookkeeping_meta( $product, $session_id );
+                    $this->propagate_to_wpml_translations( $product, false );
+                    $stats['unchanged']++;
+                }
 
                 // Clear individual product from memory to prevent buildup
                 // This is safe because we're done with this product
@@ -757,6 +779,7 @@ class Product_Service {
         // Log summary
         Logger::instance()->log( 'Stock batch sync completed', [
             'updated'            => $stats['updated'],
+            'unchanged'          => $stats['unchanged'],
             'skipped'            => $stats['skipped'],
             'errors'             => $stats['errors'],
             'total'              => $stats['total'],
@@ -765,6 +788,95 @@ class Product_Service {
         ] );
 
         return $stats;
+    }
+
+    /**
+     * Snapshot the persisted stock/price state of a product (edit context, unfiltered).
+     *
+     * Used by sync_stock_batch() to decide whether an ERP row actually changes anything
+     * a customer can see. Everything here is compared by value after
+     * set_product_stock_data() has applied the row.
+     *
+     * @param \WC_Product $product Product as loaded from the database.
+     * @return array<string,mixed>
+     */
+    private function snapshot_stock_state( \WC_Product $product ): array {
+        return [
+            'regular_price'  => (string) $product->get_regular_price( 'edit' ),
+            'sale_price'     => (string) $product->get_sale_price( 'edit' ),
+            'stock_quantity' => $product->get_stock_quantity( 'edit' ),
+            'stock_status'   => (string) $product->get_stock_status( 'edit' ),
+            'manage_stock'   => (bool) $product->get_manage_stock( 'edit' ),
+            'status'         => (string) $product->get_status( 'edit' ),
+            'warehouse_data' => $product->get_meta( '_erp_sync_warehouse_data', true, 'edit' ),
+            'all_branches'   => $product->get_meta( '_erp_sync_all_branches', true, 'edit' ),
+            'drafted_flag'   => (string) $product->get_meta( '_erp_sync_drafted_by_exclusion', true, 'edit' ),
+            'zeroed_reason'  => (string) $product->get_meta( '_erp_sync_zeroed_reason', true, 'edit' ),
+            'managed'        => (string) $product->get_meta( '_erp_sync_managed', true, 'edit' ),
+        ];
+    }
+
+    /**
+     * Did set_product_stock_data() change anything that must be persisted through a
+     * full save (price, stock, status, warehouse/branch data, exclusion flags)?
+     *
+     * Bookkeeping-only differences (session id, updated_at, missed-runs counter) do
+     * NOT count: those are written directly by persist_bookkeeping_meta().
+     *
+     * @param \WC_Product          $product Product with ERP values applied (unsaved).
+     * @param array<string,mixed>  $before  Output of snapshot_stock_state().
+     */
+    private function has_material_change( \WC_Product $product, array $before ): bool {
+        $after = $this->snapshot_stock_state( $product );
+
+        // Normalise the two array-valued metas so key order / int-vs-string noise
+        // does not register as a change.
+        foreach ( [ 'warehouse_data', 'all_branches' ] as $k ) {
+            $before[ $k ] = $this->normalise_for_compare( $before[ $k ] );
+            $after[ $k ]  = $this->normalise_for_compare( $after[ $k ] );
+        }
+
+        return $before !== $after;
+    }
+
+    /**
+     * @param mixed $v
+     * @return mixed
+     */
+    private function normalise_for_compare( $v ) {
+        if ( ! is_array( $v ) ) {
+            return $v === '' || $v === null ? [] : $v;
+        }
+        $out = [];
+        foreach ( $v as $k => $item ) {
+            $out[ $k ] = is_array( $item ) ? $this->normalise_for_compare( $item ) : (string) $item;
+        }
+        ksort( $out );
+        return $out;
+    }
+
+    /**
+     * Persist ONLY the bookkeeping meta for a product whose ERP row changed nothing.
+     *
+     * Direct update_post_meta() calls: no post_modified bump, no save_post /
+     * woocommerce_update_product hooks, no page-cache purge, no lookup-table rebuild.
+     * These three keys are exactly what the orphan-cleanup pass reads to decide a
+     * product was "seen" in this session, so they MUST still land every run.
+     *
+     * @param \WC_Product $product    Product (its pending in-memory changes are discarded).
+     * @param string      $session_id Current sync session id ('' = none).
+     */
+    private function persist_bookkeeping_meta( \WC_Product $product, string $session_id ): void {
+        $id = $product->get_id();
+        if ( ! $id ) {
+            return;
+        }
+        if ( '' !== $session_id ) {
+            update_post_meta( $id, '_erp_sync_session_id', $session_id );
+        }
+        update_post_meta( $id, '_erp_sync_stock_updated_at', current_time( 'mysql' ) );
+        // Product is present in the feed again: reset the orphan miss counter.
+        delete_post_meta( $id, '_erp_sync_missed_runs' );
     }
 
     /**
@@ -819,9 +931,9 @@ class Product_Service {
         // current session id so orphan cleanup treats them as "seen" (not
         // missing), keeping their status consistent across all sync paths.
         if ( erp_sync_is_product_excluded( $product ) ) {
-            if ( '' !== $session_id ) {
-                $product->update_meta_data( '_erp_sync_session_id', $session_id );
-                $product->save();
+            if ( '' !== $session_id && $product->get_id() ) {
+                // Direct meta write: no full save for a product we never modify.
+                update_post_meta( $product->get_id(), '_erp_sync_session_id', $session_id );
             }
             return;
         }
@@ -970,7 +1082,7 @@ class Product_Service {
      *
      * @param \WC_Product $source The product just written by ERP sync.
      */
-    public function propagate_to_wpml_translations( \WC_Product $source ): void {
+    public function propagate_to_wpml_translations( \WC_Product $source, bool $full_sync = true ): void {
         // Bail if WPML is not loaded
         if ( ! defined( 'ICL_SITEPRESS_VERSION' ) && ! has_filter( 'wpml_element_trid' ) ) {
             return;
@@ -1003,8 +1115,12 @@ class Product_Service {
         // Mirror session_id + stock_updated_at so translations are visible to the
         // orphan-cleanup query (it filters on _erp_sync_session_id; if translations
         // never carry it, every EN copy would look orphaned and get zeroed).
-        $session_id        = (string) $source->get_meta( '_erp_sync_session_id', true );
-        $stock_updated_at  = (string) $source->get_meta( '_erp_sync_stock_updated_at', true );
+        $session_id        = $full_sync
+            ? (string) $source->get_meta( '_erp_sync_session_id', true )
+            : (string) get_post_meta( $source_id, '_erp_sync_session_id', true );
+        $stock_updated_at  = $full_sync
+            ? (string) $source->get_meta( '_erp_sync_stock_updated_at', true )
+            : (string) get_post_meta( $source_id, '_erp_sync_stock_updated_at', true );
         $zeroed_reason     = (string) $source->get_meta( '_erp_sync_zeroed_reason', true );
 
         // Snapshot source's branch taxonomy terms so translations show the same
@@ -1024,6 +1140,19 @@ class Product_Service {
         foreach ( $translations as $tr ) {
             $tr_id = isset( $tr->element_id ) ? (int) $tr->element_id : 0;
             if ( $tr_id === 0 || $tr_id === $source_id ) {
+                continue;
+            }
+
+            if ( ! $full_sync ) {
+                // Source row was a no-op: mirror only the bookkeeping meta so the
+                // translation stays "seen" for orphan cleanup. No product load, no save.
+                if ( $session_id !== '' ) {
+                    update_post_meta( $tr_id, '_erp_sync_session_id', $session_id );
+                }
+                if ( $stock_updated_at !== '' ) {
+                    update_post_meta( $tr_id, '_erp_sync_stock_updated_at', $stock_updated_at );
+                }
+                delete_post_meta( $tr_id, '_erp_sync_missed_runs' );
                 continue;
             }
 

@@ -397,11 +397,12 @@ class Cron {
         $result = [
             'time'    => current_time('mysql'),
             'success' => false,
-            'updated' => 0,
-            'skipped' => 0,
-            'errors'  => 0,
-            'total'   => 0,
-            'error'   => '',
+            'updated'   => 0,
+            'unchanged' => 0,
+            'skipped'   => 0,
+            'errors'    => 0,
+            'total'     => 0,
+            'error'     => '',
         ];
 
         Logger::instance()->log( 'ERP Sync stock cron run start', [
@@ -418,6 +419,7 @@ class Cron {
             $result['skipped'] = (int) ( $res['skipped'] ?? 0 );
             $result['errors']  = (int) ( $res['errors'] ?? 0 );
             $result['total']   = (int) ( $res['total'] ?? 0 );
+            $result['unchanged'] = (int) ( $res['unchanged'] ?? 0 );
         } catch ( \Throwable $e ) {
             $result['error'] = $e->getMessage();
             Logger::instance()->log( 'ERP Sync stock cron update failed', [ 'error' => $e->getMessage() ] );
@@ -430,6 +432,7 @@ class Cron {
             Logger::instance()->log( 'ERP Sync stock cron run end', [
                 'success'        => $result['success'] ? 1 : 0,
                 'updated'        => $result['updated'],
+                'unchanged'      => $result['unchanged'],
                 'skipped'        => $result['skipped'],
                 'errors'         => $result['errors'],
                 'total'          => $result['total'],

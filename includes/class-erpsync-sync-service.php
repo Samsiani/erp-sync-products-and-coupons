@@ -464,6 +464,7 @@ class Sync_Service {
                 $aggregate_stats['created'] += $batch_stats['created'];
                 $aggregate_stats['updated'] += $batch_stats['updated'];
                 $aggregate_stats['errors']  += $batch_stats['errors'];
+                $aggregate_stats['unchanged'] += (int) ( $batch_stats['unchanged'] ?? 0 );
 
                 $processed_batches++;
 
@@ -495,6 +496,7 @@ class Sync_Service {
                 'processed_batches' => $processed_batches,
                 'created'           => $aggregate_stats['created'],
                 'updated'           => $aggregate_stats['updated'],
+                'unchanged'         => $aggregate_stats['unchanged'],
                 'errors'            => $aggregate_stats['errors'],
                 'orphans_zeroed'    => $orphan_count,
                 'user'              => wp_get_current_user()->user_login ?? 'system',
@@ -632,9 +634,10 @@ class Sync_Service {
 
             // Aggregate statistics across all batches
             $aggregate_stats = [
-                'updated' => 0,
-                'skipped' => 0,
-                'errors'  => 0,
+                'updated'   => 0,
+                'unchanged' => 0,
+                'skipped'   => 0,
+                'errors'    => 0,
             ];
 
             // Process each chunk synchronously
@@ -645,6 +648,7 @@ class Sync_Service {
                 $aggregate_stats['updated'] += $batch_stats['updated'];
                 $aggregate_stats['skipped'] += $batch_stats['skipped'];
                 $aggregate_stats['errors']  += $batch_stats['errors'];
+                $aggregate_stats['unchanged'] += (int) ( $batch_stats['unchanged'] ?? 0 );
 
                 $processed_batches++;
 
@@ -688,6 +692,7 @@ class Sync_Service {
                 'batch_size'        => self::BATCH_SIZE,
                 'processed_batches' => $processed_batches,
                 'updated'           => $aggregate_stats['updated'],
+                'unchanged'         => $aggregate_stats['unchanged'],
                 'skipped'           => $aggregate_stats['skipped'],
                 'errors'            => $aggregate_stats['errors'],
                 'orphans_zeroed'    => $orphan_count,
@@ -893,8 +898,7 @@ class Sync_Service {
 
             if ( $missed < $threshold ) {
                 // Not yet over threshold — just persist the counter and move on
-                $product->update_meta_data( self::META_MISSED_RUNS, $missed );
-                $product->save();
+                update_post_meta( $product_id, self::META_MISSED_RUNS, $missed );  // direct: counter only, no full save
                 unset( $product );
                 continue;
             }
@@ -910,8 +914,7 @@ class Sync_Service {
             $current_stock  = (int) $product->get_stock_quantity();
             $current_status = (string) $product->get_stock_status();
             if ( $current_stock <= 0 && $current_status === 'outofstock' ) {
-                $product->update_meta_data( self::META_MISSED_RUNS, $threshold );
-                $product->save();
+                update_post_meta( $product_id, self::META_MISSED_RUNS, $threshold );  // direct: counter only, no full save
                 unset( $product );
                 continue;
             }
@@ -920,8 +923,7 @@ class Sync_Service {
                 // Per-run cap hit — log but don't zero this one; keep counter at threshold-1
                 // so a future run can pick it up but we don't grow the counter unboundedly.
                 $result['cap_hit'] = true;
-                $product->update_meta_data( self::META_MISSED_RUNS, $threshold );
-                $product->save();
+                update_post_meta( $product_id, self::META_MISSED_RUNS, $threshold );  // direct: counter only, no full save
                 unset( $product );
                 continue;
             }
@@ -933,8 +935,7 @@ class Sync_Service {
                 // multiple cycles of "would-have-zeroed" build up correctly.
                 // Decrement cap_remaining so the dry-run output accurately mirrors what
                 // a real run would have done (cap applies identically).
-                $product->update_meta_data( self::META_MISSED_RUNS, $missed );
-                $product->save();
+                update_post_meta( $product_id, self::META_MISSED_RUNS, $missed );  // direct: counter only, no full save
                 $zeroed_log[] = [ 'id' => $product_id, 'sku' => $sku, 'old_stock' => $old_stock, 'missed' => $missed, 'dry' => true ];
                 $cap_remaining--;
             } else {
@@ -1150,6 +1151,7 @@ class Sync_Service {
             'updated'     => $stats['updated'] ?? 0,
             'skipped'     => $stats['skipped'] ?? 0,
             'errors'      => $stats['errors'] ?? 0,
+            'unchanged'   => $stats['unchanged'] ?? 0,
             'step'        => 'process',
         ];
     }
@@ -1381,6 +1383,7 @@ class Sync_Service {
             'created'     => $stats['created'] ?? 0,
             'updated'     => $stats['updated'] ?? 0,
             'errors'      => $stats['errors'] ?? 0,
+            'unchanged'   => $stats['unchanged'] ?? 0,
             'step'        => 'process',
         ];
     }
@@ -2634,10 +2637,11 @@ class Sync_Service {
         ] );
 
         $default_stats = [
-            'updated' => 0,
-            'skipped' => 0,
-            'errors'  => 0,
-            'total'   => count( $batch ),
+            'updated'   => 0,
+            'unchanged' => 0,
+            'skipped'   => 0,
+            'errors'    => 0,
+            'total'     => count( $batch ),
         ];
 
         try {
@@ -2646,6 +2650,7 @@ class Sync_Service {
             Logger::instance()->log( 'Stock batch processed', [
                 'session_id' => $session_id,
                 'updated'    => $stats['updated'],
+                'unchanged'  => $stats['unchanged'] ?? 0,
                 'skipped'    => $stats['skipped'],
                 'errors'     => $stats['errors'],
                 'total'      => $stats['total'],
