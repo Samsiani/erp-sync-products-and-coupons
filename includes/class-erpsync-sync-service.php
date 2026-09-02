@@ -707,6 +707,7 @@ class Sync_Service {
                 'total'          => $total,
                 'session_id'     => $session_id,
                 'updated'        => $aggregate_stats['updated'],
+                'unchanged'      => $aggregate_stats['unchanged'],
                 'skipped'        => $aggregate_stats['skipped'],
                 'errors'         => $aggregate_stats['errors'],
                 'orphans_zeroed' => $orphan_count,
