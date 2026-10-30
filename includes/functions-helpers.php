@@ -112,6 +112,23 @@ function erp_sync_is_product_excluded( \WC_Product $product ): bool {
     return false;
 }
 
+/**
+ * Free this process's in-memory object cache between sync batches.
+ *
+ * Never empties the shared persistent cache (Redis behind LiteSpeed on
+ * arttime.ge): a full wp_cache_flush() there evicted every visitor-facing
+ * cache key ~60 times per hourly stock run and dropped the sync's own
+ * transients mid-run.
+ */
+function erp_sync_flush_runtime_cache(): void {
+    if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_runtime' ) ) {
+        wp_cache_flush_runtime();
+    } elseif ( ! wp_using_ext_object_cache() ) {
+        // Non-persistent cache: a full flush only touches this process's memory.
+        wp_cache_flush();
+    }
+}
+
 function erp_sync_format_code( string $code ): string {
     if ( function_exists( 'wc_format_coupon_code' ) ) {
         return wc_format_coupon_code( $code );

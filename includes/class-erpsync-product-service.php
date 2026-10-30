@@ -331,8 +331,12 @@ class Product_Service {
             return false;
         }
 
-        // Clear WooCommerce transient cache for attributes
+        // Clear WooCommerce transient + object cache for attributes (the batch
+        // flush no longer empties the persistent cache, so do it explicitly)
         delete_transient( 'wc_attribute_taxonomies' );
+        if ( class_exists( '\WC_Cache_Helper' ) ) {
+            \WC_Cache_Helper::invalidate_cache_group( 'woocommerce-attributes' );
+        }
 
         // Flush rewrite rules on next load
         update_option( 'woocommerce_queue_flush_rewrite_rules', 'yes' );
@@ -1710,7 +1714,7 @@ class Product_Service {
                 
                 // Periodically clear caches even for skipped products
                 if ( $processed % self::ORPHAN_CLEANUP_BATCH_SIZE === 0 ) {
-                    wp_cache_flush();
+                    erp_sync_flush_runtime_cache();
                     $this->clear_cache();
                     if ( function_exists( 'gc_collect_cycles' ) ) {
                         gc_collect_cycles();
@@ -1760,7 +1764,7 @@ class Product_Service {
 
             // Periodically clear caches to prevent memory exhaustion
             if ( $processed % self::ORPHAN_CLEANUP_BATCH_SIZE === 0 ) {
-                wp_cache_flush();
+                erp_sync_flush_runtime_cache();
                 $this->clear_cache();
                 if ( function_exists( 'gc_collect_cycles' ) ) {
                     gc_collect_cycles();

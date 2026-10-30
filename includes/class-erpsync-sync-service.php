@@ -2569,8 +2569,8 @@ class Sync_Service {
      * This method should be called after processing each batch to free up memory.
      */
     private function clear_memory_caches(): void {
-        // Clear WordPress object cache
-        wp_cache_flush();
+        // Clear this process's object cache only (never the shared Redis cache)
+        erp_sync_flush_runtime_cache();
 
         // Clear WooCommerce term caches
         if ( function_exists( 'wc_delete_product_transients' ) ) {

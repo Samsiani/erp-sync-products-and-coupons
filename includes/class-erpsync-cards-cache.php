@@ -474,7 +474,7 @@ class Cards_Cache {
 
                     // Keep memory flat across a large first-run write of all cards.
                     if ( ( ++$processed % self::WC_FLUSH_EVERY ) === 0 ) {
-                        wp_cache_flush();
+                        erp_sync_flush_runtime_cache();
                         if ( function_exists( 'gc_collect_cycles' ) ) {
                             gc_collect_cycles();
                         }
