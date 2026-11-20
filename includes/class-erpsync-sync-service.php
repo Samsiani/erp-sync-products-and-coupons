@@ -1952,7 +1952,7 @@ class Sync_Service {
      *
      * Uses the "Update or Create" strategy with the CSV as source of truth.
      * Maps phone → _erp_sync_allowed_phones, discount → coupon_amount + _erp_sync_base_discount.
-     * Sets mandatory attributes: _erp_sync_managed=1, exclude_sale_items=yes,
+     * Sets mandatory attributes: _erp_sync_managed=1, individual_use=yes, exclude_sale_items=yes,
      * discount_type=percent, post_status=publish.
      *
      * @param array $row CSV row with keys: code, phone, discount, line.
@@ -1990,6 +1990,7 @@ class Sync_Service {
 
         // Mandatory attributes (always set)
         update_post_meta( $coupon_id, '_erp_sync_managed', 1 );
+        update_post_meta( $coupon_id, 'individual_use', 'yes' );
         update_post_meta( $coupon_id, 'exclude_sale_items', 'yes' );
         update_post_meta( $coupon_id, 'discount_type', 'percent' );
 
@@ -2354,6 +2355,8 @@ class Sync_Service {
 
             update_post_meta( $coupon_id, '_erp_sync_managed', 1 );
             update_post_meta( $coupon_id, 'discount_type', 'percent' );
+            update_post_meta( $coupon_id, 'individual_use', 'yes' );
+            update_post_meta( $coupon_id, 'exclude_sale_items', 'yes' );
             update_post_meta( $coupon_id, 'coupon_amount', $discount );
             update_post_meta( $coupon_id, '_erp_sync_base_discount', $discount );
             if ( $name !== '' ) {
@@ -2852,12 +2855,13 @@ class Sync_Service {
             update_post_meta( $coupon_id, 'usage_limit', '' );
             update_post_meta( $coupon_id, 'usage_limit_per_user', '' );
             update_post_meta( $coupon_id, 'limit_usage_to_x_items', '' );
-            update_post_meta( $coupon_id, 'individual_use', 'no' );
+            // Every arttime coupon: one per order, never on sale items.
+            update_post_meta( $coupon_id, 'individual_use', 'yes' );
             update_post_meta( $coupon_id, 'product_ids', '' );
             update_post_meta( $coupon_id, 'exclude_product_ids', '' );
             update_post_meta( $coupon_id, 'product_categories', [] );
             update_post_meta( $coupon_id, 'exclude_product_categories', [] );
-            update_post_meta( $coupon_id, 'exclude_sale_items', 'no' );
+            update_post_meta( $coupon_id, 'exclude_sale_items', 'yes' );
             update_post_meta( $coupon_id, 'minimum_amount', '' );
             update_post_meta( $coupon_id, 'maximum_amount', '' );
             update_post_meta( $coupon_id, 'free_shipping', 'no' );
